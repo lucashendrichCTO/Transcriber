@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Transcriber</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Transcriber</h1>
+    <p>Local audio transcription — nothing leaves your machine</p>
+  </header>
+
+  <div id="status-bar">
+    <div id="status-dot"></div>
+    <span id="status-text">Ready</span>
+  </div>
+
+  <div id="transcript-box" class="empty" aria-live="polite"></div>
+
+  <div id="controls">
+    <button id="btn-start">&#9679;&nbsp; Start Recording</button>
+    <button id="btn-stop" disabled>&#9632;&nbsp; Stop &amp; Save</button>
+  </div>
+
+  <div id="save-notice" class="hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

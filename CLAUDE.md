@@ -1,0 +1,65 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code when working in this repository.
+
+## Safety Rules
+
+- **Never delete system files without asking first.** This includes any file not explicitly created as part of this project — OS files, hidden config files, `.venv/` contents, model cache files, or anything outside the project tree. Always confirm with the user before any destructive file operation.
+
+## Running the Project
+
+```bash
+cd ~/Transcriber
+./run.sh
+```
+
+First run creates a `.venv/`, installs Python deps, and downloads the Whisper `base` model (~142 MB). Server starts at `http://localhost:8765`.
+
+To install deps manually:
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Architecture
+
+Local audio transcription tool — nothing leaves the machine.
+
+```
+Browser (static/)
+    │
+    └─► WebSocket /ws  ──►  app.py  ──►  transcriber.py (faster-whisper)
+                                │
+                        Accumulates audio chunks
+                        Transcribes on each chunk (live preview)
+                        On SAVE command: final transcription → ~/Desktop/transcript_*.txt
+```
+
+### Key files
+
+| File | Purpose |
+|---|---|
+| `app.py` | FastAPI server — WebSocket endpoint, accumulates audio, calls transcriber, saves file |
+| `transcriber.py` | faster-whisper wrapper — loads Whisper `base` model, transcribes webm bytes via temp file |
+| `static/index.html` | Dark-mode UI — record/stop buttons, live transcript display |
+| `static/app.js` | MediaRecorder, WebSocket client, sends 4-second audio chunks, renders live transcript |
+| `static/style.css` | Dark theme styles |
+| `run.sh` | One-command launcher — creates venv, installs deps, starts server |
+
+### Transcription model
+
+- Model: `faster-whisper` with Whisper `base` (English, ~142 MB, auto-downloaded on first run)
+- Runs fully on CPU with `int8` quantization — no GPU required
+- Model cache stored by `faster-whisper` in `~/.cache/huggingface/`
+
+### Recording flow
+
+1. User clicks **Start Recording** → browser requests mic, opens WebSocket, starts `MediaRecorder`
+2. Audio blobs collected every 250 ms; sent to server every 4 seconds
+3. Server accumulates all chunks, runs Whisper on the full buffer, returns live transcript
+4. User clicks **Stop & Save** → final Whisper pass → saved to `~/Desktop/transcript_YYYY-MM-DD_HHMMSS.txt`
+5. Session cleared — no audio or text retained in memory after save
+
+## Environment
+
+No API keys or environment variables required. Fully offline.
