@@ -1,9 +1,11 @@
-import io
-import wave
+import os
+import tempfile
+from typing import Optional
+
 import numpy as np
 from faster_whisper import WhisperModel
 
-_model: WhisperModel | None = None
+_model: Optional[WhisperModel] = None
 
 
 def get_model() -> WhisperModel:
@@ -34,8 +36,6 @@ def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000) -> str:
 
 def transcribe_webm(audio_bytes: bytes) -> str:
     """Transcribe webm/ogg audio bytes by writing to a temp buffer Whisper can read."""
-    import tempfile, os
-
     model = get_model()
     suffix = ".webm"
 

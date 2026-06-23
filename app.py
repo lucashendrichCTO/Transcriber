@@ -1,25 +1,16 @@
 import asyncio
 import datetime
-import os
-import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from transcriber import transcribe_webm, get_model
+from transcriber import transcribe_webm
 
 app = FastAPI()
 
 SAVE_DIR = Path.home() / "Desktop"
-
-# Eagerly load the model at startup so the first recording isn't slow
-@app.on_event("startup")
-async def startup():
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, get_model)
-
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -33,7 +24,6 @@ async def index():
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
 
-    # Accumulate all audio chunks for the current recording session
     chunks: list[bytes] = []
 
     try:
@@ -44,7 +34,6 @@ async def websocket_endpoint(ws: WebSocket):
                 chunk: bytes = message["bytes"]
                 chunks.append(chunk)
 
-                # Transcribe all accumulated audio so far for live preview
                 combined = b"".join(chunks)
                 loop = asyncio.get_event_loop()
                 transcript = await loop.run_in_executor(None, transcribe_webm, combined)
@@ -54,7 +43,6 @@ async def websocket_endpoint(ws: WebSocket):
                 cmd = message["text"]
 
                 if cmd == "SAVE":
-                    # Final transcription + save to Desktop
                     combined = b"".join(chunks)
                     if combined:
                         loop = asyncio.get_event_loop()
@@ -70,7 +58,6 @@ async def websocket_endpoint(ws: WebSocket):
                     else:
                         await ws.send_json({"type": "error", "text": "No audio recorded."})
 
-                    # Clear session state
                     chunks.clear()
 
                 elif cmd == "CANCEL":
