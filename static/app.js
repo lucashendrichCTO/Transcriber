@@ -6,18 +6,21 @@
   const statusText   = document.getElementById("status-text");
   const saveNotice   = document.getElementById("save-notice");
 
-  const TARGET_RATE  = 16000;   // Whisper works at 16 kHz mono
+  const TARGET_RATE   = 16000;  // Whisper works at 16 kHz mono
   const SEND_EVERY_MS = 3000;   // push accumulated audio every 3s for live preview
 
   let ws          = null;
   let audioCtx    = null;
   let sourceNode  = null;
-  let processor   = null;
+  let workletNode = null;
   let stream      = null;
   let sendTimer   = null;
 
-  // Float32 chunks captured since the last send (at audioCtx.sampleRate)
+  // Float32 batches captured since the last send (at audioCtx.sampleRate)
   let floatChunks = [];
+  // Diagnostics
+  let samplesCaptured = 0;
+  let bytesSent = 0;
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -49,8 +52,7 @@
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws`);
       ws.binaryType = "arraybuffer";
-
-      ws.onopen = () => resolve();
+      ws.onopen = () => { console.log("[transcriber] WebSocket open"); resolve(); };
       ws.onerror = () => {
         setStatus("", "WebSocket error — is the server running?");
         reject();
@@ -58,6 +60,7 @@
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data);
         if (msg.type === "transcript") {
+          console.log("[transcriber] preview:", JSON.stringify(msg.text));
           setTranscript(msg.text);
         } else if (msg.type === "saved") {
           setStatus("saved", "Saved");
@@ -96,7 +99,6 @@
   function flushAudio() {
     if (!ws || ws.readyState !== WebSocket.OPEN || floatChunks.length === 0) return;
 
-    // Concatenate captured float chunks
     let total = 0;
     for (const c of floatChunks) total += c.length;
     const merged = new Float32Array(total);
@@ -106,6 +108,8 @@
 
     const pcm16 = toInt16PCM(merged, audioCtx.sampleRate);
     ws.send(pcm16.buffer);
+    bytesSent += pcm16.buffer.byteLength;
+    console.log(`[transcriber] sent ${pcm16.length} samples (${pcm16.buffer.byteLength} bytes); total ${bytesSent} bytes`);
   }
 
   btnStart.addEventListener("click", async () => {
@@ -118,6 +122,9 @@
 
     setTranscript("");
     saveNotice.classList.add("hidden");
+    samplesCaptured = 0;
+    bytesSent = 0;
+    floatChunks = [];
 
     try {
       await openSocket();
@@ -126,23 +133,39 @@
       return;
     }
 
-    // Try to capture directly at 16 kHz; browsers may ignore and use 44.1/48 kHz,
-    // in which case toInt16PCM downsamples from audioCtx.sampleRate.
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
+    // Use the NATIVE sample rate (do not force 16 kHz — that can yield silent
+    // capture on hardware running at 44.1/48 kHz). We downsample in JS instead.
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") await audioCtx.resume();
+    console.log("[transcriber] AudioContext sampleRate:", audioCtx.sampleRate);
 
-    sourceNode = audioCtx.createMediaStreamSource(stream);
-    processor  = audioCtx.createScriptProcessor(4096, 1, 1);
+    try {
+      await audioCtx.audioWorklet.addModule("/static/worklet-processor.js");
+    } catch (err) {
+      console.error("[transcriber] failed to load AudioWorklet:", err);
+      setStatus("", "Audio init failed — see console");
+      stream.getTracks().forEach(t => t.stop());
+      resetUI();
+      return;
+    }
 
-    processor.onaudioprocess = (e) => {
-      // Copy — the underlying buffer is reused by the browser
-      floatChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    sourceNode  = audioCtx.createMediaStreamSource(stream);
+    workletNode = new AudioWorkletNode(audioCtx, "pcm-worklet");
+
+    workletNode.port.onmessage = (e) => {
+      const batch = e.data; // Float32Array
+      floatChunks.push(batch);
+      samplesCaptured += batch.length;
     };
 
-    sourceNode.connect(processor);
-    processor.connect(audioCtx.destination); // some browsers need this to fire events
+    sourceNode.connect(workletNode);
+    // Worklet outputs silence (it only reads input), so this won't cause feedback.
+    workletNode.connect(audioCtx.destination);
 
-    sendTimer = setInterval(flushAudio, SEND_EVERY_MS);
+    sendTimer = setInterval(() => {
+      console.log(`[transcriber] tick — captured ${samplesCaptured} samples so far`);
+      flushAudio();
+    }, SEND_EVERY_MS);
 
     setStatus("recording", "Recording…");
     btnStart.disabled = true;
@@ -156,13 +179,13 @@
     clearInterval(sendTimer);
     sendTimer = null;
 
-    // Tear down the audio graph
-    if (processor) { processor.disconnect(); processor.onaudioprocess = null; }
+    if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); }
     if (sourceNode) sourceNode.disconnect();
     if (stream) stream.getTracks().forEach(t => t.stop());
 
     // Send any remaining audio, then ask the server to transcribe + save
     flushAudio();
+    console.log(`[transcriber] stop — captured ${samplesCaptured} samples, sent ${bytesSent} bytes total`);
     if (audioCtx) { await audioCtx.close(); audioCtx = null; }
 
     if (ws && ws.readyState === WebSocket.OPEN) {
