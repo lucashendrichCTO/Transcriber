@@ -3,6 +3,9 @@ set -e
 
 cd "$(dirname "$0")"
 
+PORT=8765
+URL="http://127.0.0.1:${PORT}"
+
 # Find Python 3.9+
 PY=""
 for candidate in python3 /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
@@ -26,12 +29,31 @@ fi
 source .venv/bin/activate
 
 # Install / upgrade deps quietly
+echo "Checking dependencies…"
 pip install -q -r requirements.txt
 
+# Free the port if a stale server is still holding it
+STALE=$(lsof -nP -iTCP:${PORT} -sTCP:LISTEN -t 2>/dev/null || true)
+if [ -n "$STALE" ]; then
+  echo "Port ${PORT} was in use by PID(s): $STALE — stopping them…"
+  echo "$STALE" | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
+
 echo ""
-echo "Starting Transcriber at http://localhost:8765"
-echo "Open that URL in your browser, then press Ctrl+C to stop."
-echo "Note: The Whisper model (~142 MB) downloads on first use — first transcription will be slower."
+echo "────────────────────────────────────────────────────────"
+echo "  Transcriber is starting."
 echo ""
+echo "  Open this URL in your browser (note the port :${PORT}):"
+echo ""
+echo "      ${URL}"
+echo ""
+echo "  Press Ctrl+C to stop the server."
+echo "  First transcription downloads the Whisper model (~142 MB)."
+echo "────────────────────────────────────────────────────────"
+echo ""
+
+# Auto-open the browser to the correct URL (2s delay so the server is up)
+( sleep 2 && command -v open >/dev/null && open "${URL}" ) &
 
 python app.py

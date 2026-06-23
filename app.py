@@ -30,6 +30,10 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             message = await ws.receive()
 
+            # Client closed the connection
+            if message["type"] == "websocket.disconnect":
+                break
+
             if "bytes" in message and message["bytes"]:
                 chunk: bytes = message["bytes"]
                 chunks.append(chunk)
@@ -64,7 +68,8 @@ async def websocket_endpoint(ws: WebSocket):
                     chunks.clear()
                     await ws.send_json({"type": "cancelled"})
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # RuntimeError is raised by Starlette if the client disconnects abruptly
         pass
 
 
