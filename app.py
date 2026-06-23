@@ -6,7 +6,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from transcriber import transcribe_webm
+from transcriber import transcribe_pcm
 
 app = FastAPI()
 
@@ -24,7 +24,10 @@ async def index():
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
 
-    chunks: list[bytes] = []
+    # Raw 16-bit mono PCM bytes accumulated for the current recording session
+    pcm = bytearray()
+    # Avoid piling up live-preview passes on the CPU as the buffer grows
+    previewing = False
 
     try:
         while True:
@@ -35,22 +38,29 @@ async def websocket_endpoint(ws: WebSocket):
                 break
 
             if "bytes" in message and message["bytes"]:
-                chunk: bytes = message["bytes"]
-                chunks.append(chunk)
+                pcm.extend(message["bytes"])
 
-                combined = b"".join(chunks)
-                loop = asyncio.get_event_loop()
-                transcript = await loop.run_in_executor(None, transcribe_webm, combined)
-                await ws.send_json({"type": "transcript", "text": transcript})
+                # Skip this live preview if a previous one is still running
+                if previewing:
+                    continue
+                previewing = True
+                try:
+                    loop = asyncio.get_event_loop()
+                    snapshot = bytes(pcm)
+                    transcript = await loop.run_in_executor(None, transcribe_pcm, snapshot)
+                    await ws.send_json({"type": "transcript", "text": transcript})
+                finally:
+                    previewing = False
 
             elif "text" in message:
                 cmd = message["text"]
 
                 if cmd == "SAVE":
-                    combined = b"".join(chunks)
-                    if combined:
+                    if pcm:
                         loop = asyncio.get_event_loop()
-                        final_text = await loop.run_in_executor(None, transcribe_webm, combined)
+                        final_text = await loop.run_in_executor(
+                            None, transcribe_pcm, bytes(pcm)
+                        )
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
                         save_path = SAVE_DIR / f"transcript_{timestamp}.txt"
                         save_path.write_text(final_text, encoding="utf-8")
@@ -62,10 +72,10 @@ async def websocket_endpoint(ws: WebSocket):
                     else:
                         await ws.send_json({"type": "error", "text": "No audio recorded."})
 
-                    chunks.clear()
+                    pcm = bytearray()
 
                 elif cmd == "CANCEL":
-                    chunks.clear()
+                    pcm = bytearray()
                     await ws.send_json({"type": "cancelled"})
 
     except (WebSocketDisconnect, RuntimeError):

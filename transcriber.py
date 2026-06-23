@@ -1,5 +1,3 @@
-import os
-import tempfile
 from typing import Optional
 
 import numpy as np
@@ -18,10 +16,19 @@ def get_model() -> WhisperModel:
 
 
 def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000) -> str:
-    """Transcribe raw 16-bit PCM audio bytes and return the full transcript string."""
+    """Transcribe raw 16-bit mono PCM audio bytes and return the full transcript.
+
+    The browser sends raw PCM (no container), so every slice — including a
+    partial buffer mid-recording — is always decodable. This avoids the
+    truncated-webm problem where ffmpeg decodes zero frames from an
+    unfinalized MediaRecorder stream.
+    """
+    if not pcm_bytes:
+        return ""
+
     model = get_model()
 
-    # Convert raw PCM bytes to float32 numpy array
+    # Raw 16-bit signed PCM -> float32 in [-1, 1]
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
     segments, _ = model.transcribe(
@@ -32,24 +39,3 @@ def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000) -> str:
     )
 
     return " ".join(seg.text.strip() for seg in segments).strip()
-
-
-def transcribe_webm(audio_bytes: bytes) -> str:
-    """Transcribe webm/ogg audio bytes by writing to a temp buffer Whisper can read."""
-    model = get_model()
-    suffix = ".webm"
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-        f.write(audio_bytes)
-        tmp_path = f.name
-
-    try:
-        segments, _ = model.transcribe(
-            tmp_path,
-            language="en",
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 300},
-        )
-        return " ".join(seg.text.strip() for seg in segments).strip()
-    finally:
-        os.unlink(tmp_path)

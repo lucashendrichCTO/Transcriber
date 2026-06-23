@@ -6,11 +6,18 @@
   const statusText   = document.getElementById("status-text");
   const saveNotice   = document.getElementById("save-notice");
 
-  let mediaRecorder = null;
-  let ws            = null;
-  // Collect chunks between sends so we send a proper webm segment each time
-  let pendingChunks = [];
-  let chunkTimer    = null;
+  const TARGET_RATE  = 16000;   // Whisper works at 16 kHz mono
+  const SEND_EVERY_MS = 3000;   // push accumulated audio every 3s for live preview
+
+  let ws          = null;
+  let audioCtx    = null;
+  let sourceNode  = null;
+  let processor   = null;
+  let stream      = null;
+  let sendTimer   = null;
+
+  // Float32 chunks captured since the last send (at audioCtx.sampleRate)
+  let floatChunks = [];
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -27,107 +34,6 @@
     }
   }
 
-  function openSocket() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.binaryType = "arraybuffer";
-
-    ws.onmessage = (evt) => {
-      const msg = JSON.parse(evt.data);
-
-      if (msg.type === "transcript") {
-        setTranscript(msg.text);
-      } else if (msg.type === "saved") {
-        setStatus("saved", "Saved");
-        setTranscript(msg.text);
-        showSaveNotice(msg.path);
-        resetUI();
-      } else if (msg.type === "error") {
-        setStatus("", `Error: ${msg.text}`);
-        resetUI();
-      } else if (msg.type === "cancelled") {
-        setTranscript("");
-        setStatus("", "Cancelled");
-        resetUI();
-      }
-    };
-
-    ws.onerror = () => setStatus("", "WebSocket error — is the server running?");
-  }
-
-  function sendPendingChunks() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (pendingChunks.length === 0) return;
-    const blob = new Blob(pendingChunks, { type: mediaRecorder.mimeType });
-    blob.arrayBuffer().then(buf => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(buf);
-    });
-    pendingChunks = [];
-  }
-
-  btnStart.addEventListener("click", async () => {
-    // Request mic permission
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    } catch (e) {
-      setStatus("", "Microphone access denied");
-      return;
-    }
-
-    setTranscript("");
-    saveNotice.classList.add("hidden");
-    openSocket();
-
-    // Wait for socket to open before starting recorder
-    ws.onopen = () => {
-      // Pick a supported MIME type — Safari supports mp4, Chrome/Firefox prefer webm
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : "audio/mp4";
-
-      mediaRecorder = new MediaRecorder(stream, { mimeType });
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) pendingChunks.push(e.data);
-      };
-
-      // Collect a timeslice every 250 ms, then send to server every 4 s
-      mediaRecorder.start(250);
-      chunkTimer = setInterval(sendPendingChunks, 4000);
-
-      setStatus("recording", "Recording…");
-      btnStart.disabled = true;
-      btnStop.disabled  = false;
-    };
-  });
-
-  btnStop.addEventListener("click", () => {
-    if (!mediaRecorder) return;
-
-    setStatus("processing", "Processing…");
-    btnStop.disabled = true;
-
-    // Stop the interval, flush remaining audio, then tell server to save
-    clearInterval(chunkTimer);
-    chunkTimer = null;
-
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach(t => t.stop());
-
-    // ondataavailable fires one last time after stop(); give it a tick
-    mediaRecorder.onstop = () => {
-      sendPendingChunks();
-      // Small delay to ensure the final binary frame is transmitted before the SAVE command
-      setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send("SAVE");
-      }, 300);
-      mediaRecorder = null;
-    };
-  });
-
   function showSaveNotice(path) {
     saveNotice.textContent = `Saved → ${path}`;
     saveNotice.classList.remove("hidden");
@@ -137,4 +43,130 @@
     btnStart.disabled = false;
     btnStop.disabled  = true;
   }
+
+  function openSocket() {
+    return new Promise((resolve, reject) => {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => resolve();
+      ws.onerror = () => {
+        setStatus("", "WebSocket error — is the server running?");
+        reject();
+      };
+      ws.onmessage = (evt) => {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === "transcript") {
+          setTranscript(msg.text);
+        } else if (msg.type === "saved") {
+          setStatus("saved", "Saved");
+          setTranscript(msg.text);
+          showSaveNotice(msg.path);
+          resetUI();
+        } else if (msg.type === "error") {
+          setStatus("", `Error: ${msg.text}`);
+          resetUI();
+        } else if (msg.type === "cancelled") {
+          setTranscript("");
+          setStatus("", "Cancelled");
+          resetUI();
+        }
+      };
+    });
+  }
+
+  // Downsample Float32 @ inRate -> Int16 @ TARGET_RATE (mono)
+  function toInt16PCM(float32, inRate) {
+    const ratio = inRate / TARGET_RATE;
+    const outLen = Math.floor(float32.length / ratio);
+    const out = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(Math.floor((i + 1) * ratio), float32.length);
+      let sum = 0, count = 0;
+      for (let j = start; j < end; j++) { sum += float32[j]; count++; }
+      let s = count ? sum / count : 0;
+      s = Math.max(-1, Math.min(1, s));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return out;
+  }
+
+  function flushAudio() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || floatChunks.length === 0) return;
+
+    // Concatenate captured float chunks
+    let total = 0;
+    for (const c of floatChunks) total += c.length;
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const c of floatChunks) { merged.set(c, offset); offset += c.length; }
+    floatChunks = [];
+
+    const pcm16 = toInt16PCM(merged, audioCtx.sampleRate);
+    ws.send(pcm16.buffer);
+  }
+
+  btnStart.addEventListener("click", async () => {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (e) {
+      setStatus("", "Microphone access denied");
+      return;
+    }
+
+    setTranscript("");
+    saveNotice.classList.add("hidden");
+
+    try {
+      await openSocket();
+    } catch {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+
+    // Try to capture directly at 16 kHz; browsers may ignore and use 44.1/48 kHz,
+    // in which case toInt16PCM downsamples from audioCtx.sampleRate.
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+
+    sourceNode = audioCtx.createMediaStreamSource(stream);
+    processor  = audioCtx.createScriptProcessor(4096, 1, 1);
+
+    processor.onaudioprocess = (e) => {
+      // Copy — the underlying buffer is reused by the browser
+      floatChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    };
+
+    sourceNode.connect(processor);
+    processor.connect(audioCtx.destination); // some browsers need this to fire events
+
+    sendTimer = setInterval(flushAudio, SEND_EVERY_MS);
+
+    setStatus("recording", "Recording…");
+    btnStart.disabled = true;
+    btnStop.disabled  = false;
+  });
+
+  btnStop.addEventListener("click", async () => {
+    setStatus("processing", "Processing…");
+    btnStop.disabled = true;
+
+    clearInterval(sendTimer);
+    sendTimer = null;
+
+    // Tear down the audio graph
+    if (processor) { processor.disconnect(); processor.onaudioprocess = null; }
+    if (sourceNode) sourceNode.disconnect();
+    if (stream) stream.getTracks().forEach(t => t.stop());
+
+    // Send any remaining audio, then ask the server to transcribe + save
+    flushAudio();
+    if (audioCtx) { await audioCtx.close(); audioCtx = null; }
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send("SAVE");
+    }
+  });
 })();
