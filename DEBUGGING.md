@@ -21,19 +21,56 @@ even though the browser console shows audio is being captured and sent.
 Captured-and-sent but empty transcription ⇒ the bytes arriving server-side are
 probably silence / near-zero / mis-scaled, so VAD strips everything.
 
-## Next diagnostic step (do this first)
+## Diagnostic instrumentation added (2026-06-23)
 
-Dump what the server actually receives to a WAV file and inspect it:
+Two diagnostic tools are now wired in:
 
-1. In `app.py`, temporarily write the accumulated `pcm` buffer to a WAV on SAVE
-   (16 kHz, mono, 16-bit) instead of (or in addition to) transcribing.
-2. Open that WAV. Check: is there audible speech? What's the RMS / peak amplitude?
-   - **Silent / near-zero amplitude** → the capture path produces silence. Suspect:
-     `toInt16PCM` scaling, the Float32→Int16 conversion, the worklet posting empty
-     channel data, or the downsample averaging zeroing things out.
-   - **Audible speech present** → the problem is server-side interpretation
-     (sample rate, dtype, endianness) — but note synthetic PCM already works, so
-     compare the byte layout the browser sends vs. the Python test client.
+### 1. Browser amplitude logging (`static/app.js`)
+
+Every `flushAudio()` call now logs the peak Float32 amplitude before downsampling:
+
+```
+[transcriber] flush peak amplitude: 0.3712 (144384 float32 samples @ 48000 Hz)
+```
+
+If this reads `0.0000` or `< 0.001` you get a WARNING. That means mic samples are
+silent — the capture path is broken before `toInt16PCM` even runs.
+
+**Interpretation:**
+- `peak > 0.01` → audio data is real; problem is downstream (server-side or VAD)
+- `peak < 0.001` → audio is silent in JS; fix is in getUserMedia / AudioWorklet
+
+### 2. Server WAV dump (`app.py`)
+
+On every SAVE, `app.py` writes a `.wav` file alongside the transcript:
+
+```
+~/Desktop/transcript_2026-06-23_143012_debug.wav
+```
+
+This is controlled by the `DEBUG_WAV` env variable (default ON, set `DEBUG_WAV=0`
+to disable). The server log prints:
+
+```
+[transcriber] debug WAV saved: /Users/.../transcript_..._debug.wav  (512000 bytes, ~16.0s)
+```
+
+Open the WAV in QuickTime, Audacity, or run `afplay` to hear what the server received.
+
+**Interpretation:**
+- **Audible speech** → audio is reaching the server correctly; VAD threshold may be too
+  aggressive, or the sample rate is being misread. Try `vad_filter=False` in `transcriber.py`.
+- **Silence / flat line** → PCM content is zero. The fault is in JS (`toInt16PCM` math or
+  Float32Array scaling). Check the browser amplitude logs first.
+- **Garbled / chipmunk audio** → sample rate mismatch. The server is assuming 16 kHz but the
+  browser may be sending at a different rate. Verify `audioCtx.sampleRate` log matches
+  `toInt16PCM` downsampling target.
+
+## Next steps (ordered)
+
+1. Record something, click Stop & Save, check browser console for peak amplitude value
+2. Open the `_debug.wav` on the Desktop and listen
+3. Based on what you find, go to the relevant section above for the fix
 
 ## Key files / facts
 
@@ -42,10 +79,3 @@ Dump what the server actually receives to a WAV file and inspect it:
 - PCM contract: raw 16-bit signed little-endian, mono, 16 kHz.
 - AudioContext runs at the NATIVE rate (e.g. 48000); `toInt16PCM` downsamples to 16000.
 - Server saves to `~/Desktop/transcript_YYYY-MM-DD_HHMMSS.txt`.
-
-## Quick sanity probe in the browser console (while recording)
-
-Check that captured floats aren't silent — paste in DevTools after Start:
-the `sent N samples` line already logs counts; to check amplitude, temporarily
-log `Math.max(...merged.map(Math.abs))` inside `flushAudio` — if it's ~0, the
-mic samples are silent despite the count being non-zero.

@@ -5,6 +5,27 @@
   const statusDot    = document.getElementById("status-dot");
   const statusText   = document.getElementById("status-text");
   const saveNotice   = document.getElementById("save-notice");
+  const deviceSelect = document.getElementById("device-select");
+
+  // Populate audio input device list (requires a prior getUserMedia grant to see labels)
+  async function populateDevices() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === "audioinput");
+      // Keep the default option, add real devices
+      deviceSelect.innerHTML = '<option value="">Default microphone</option>';
+      for (const d of inputs) {
+        const opt = document.createElement("option");
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${deviceSelect.options.length}`;
+        deviceSelect.appendChild(opt);
+      }
+    } catch (_) {}
+  }
+
+  // Enumerate on load (labels may be blank until mic permission granted)
+  populateDevices();
+  navigator.mediaDevices.addEventListener("devicechange", populateDevices);
 
   const TARGET_RATE   = 16000;  // Whisper works at 16 kHz mono
   const SEND_EVERY_MS = 3000;   // push accumulated audio every 3s for live preview
@@ -45,6 +66,7 @@
   function resetUI() {
     btnStart.disabled = false;
     btnStop.disabled  = true;
+    deviceSelect.disabled = false;
   }
 
   function openSocket() {
@@ -106,6 +128,15 @@
     for (const c of floatChunks) { merged.set(c, offset); offset += c.length; }
     floatChunks = [];
 
+    // Amplitude check — if peak is near zero, mic is silent or capture is broken
+    let peak = 0;
+    for (let i = 0; i < merged.length; i++) {
+      const abs = Math.abs(merged[i]);
+      if (abs > peak) peak = abs;
+    }
+    console.log(`[transcriber] flush peak amplitude: ${peak.toFixed(4)} (${merged.length} float32 samples @ ${audioCtx.sampleRate} Hz)`);
+    if (peak < 0.001) console.warn("[transcriber] WARNING: near-silent audio — check mic permissions or hardware");
+
     const pcm16 = toInt16PCM(merged, audioCtx.sampleRate);
     ws.send(pcm16.buffer);
     bytesSent += pcm16.buffer.byteLength;
@@ -113,12 +144,23 @@
   }
 
   btnStart.addEventListener("click", async () => {
+    const selectedDeviceId = deviceSelect.value;
+    const audioConstraints = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}),
+    };
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
     } catch (e) {
-      setStatus("", "Microphone access denied");
+      setStatus("", "Audio source access denied");
       return;
     }
+    // Re-populate device list now that we have permission (labels become visible)
+    await populateDevices();
+    if (selectedDeviceId) deviceSelect.value = selectedDeviceId;
+    deviceSelect.disabled = true;
 
     setTranscript("");
     saveNotice.classList.add("hidden");
@@ -153,7 +195,8 @@
     workletNode = new AudioWorkletNode(audioCtx, "pcm-worklet");
 
     workletNode.port.onmessage = (e) => {
-      const batch = e.data; // Float32Array
+      const batch = e.data;
+      if (!(batch instanceof Float32Array) || batch.length === 0) return;
       floatChunks.push(batch);
       samplesCaptured += batch.length;
     };

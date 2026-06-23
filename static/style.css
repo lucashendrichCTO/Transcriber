@@ -148,6 +148,31 @@ button:disabled {
 
 #btn-stop:not(:disabled):hover { background: var(--danger-hover); }
 
+/* Device selector */
+#device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+#device-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.85rem;
+  padding: 6px 10px;
+  cursor: pointer;
+  min-width: 220px;
+}
+
+#device-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* Save notification */
 #save-notice {
   font-size: 0.82rem;
