@@ -79,6 +79,15 @@
         setStatus("", "WebSocket error — is the server running?");
         reject();
       };
+      ws.onclose = (evt) => {
+        // Only treat as unexpected if we're still in "recording" state
+        if (statusDot.className === "recording") {
+          console.warn(`[transcriber] WebSocket closed unexpectedly (code ${evt.code}) — stopping timer`);
+          clearInterval(sendTimer);
+          sendTimer = null;
+          setStatus("", "Connection lost — server may have crashed. Stop and restart recording.");
+        }
+      };
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data);
         if (msg.type === "transcript") {
@@ -233,6 +242,9 @@
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send("SAVE");
+    } else {
+      setStatus("", "Connection was lost — transcript not saved. Reload and try again.");
+      resetUI();
     }
   });
 })();

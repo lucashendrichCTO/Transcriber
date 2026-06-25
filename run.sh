@@ -54,6 +54,6 @@ echo "────────────────────────�
 echo ""
 
 # Auto-open the browser to the correct URL (2s delay so the server is up)
-( sleep 2 && command -v open >/dev/null && open "${URL}" ) &
+( sleep 5 && command -v open >/dev/null && open "${URL}" ) &
 
-python app.py
+python -m uvicorn app:app --host 127.0.0.1 --port $PORT --log-level info

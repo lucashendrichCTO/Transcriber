@@ -15,27 +15,29 @@ def get_model() -> WhisperModel:
     return _model
 
 
-def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000) -> str:
-    """Transcribe raw 16-bit mono PCM audio bytes and return the full transcript.
+def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000, skip_secs: float = 0.0) -> str:
+    """Transcribe raw 16-bit mono PCM audio bytes and return the transcript.
 
-    The browser sends raw PCM (no container), so every slice — including a
-    partial buffer mid-recording — is always decodable. This avoids the
-    truncated-webm problem where ffmpeg decodes zero frames from an
-    unfinalized MediaRecorder stream.
+    skip_secs: exclude segments that end before this timestamp. Used to discard
+    the overlap prefix prepended for context when stitching chunks.
     """
     if not pcm_bytes:
         return ""
 
     model = get_model()
 
-    # Raw 16-bit signed PCM -> float32 in [-1, 1]
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
     segments, _ = model.transcribe(
         audio,
         language="en",
-        vad_filter=True,           # skip silence
+        vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 300},
     )
 
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    parts = []
+    for seg in segments:
+        if seg.end <= skip_secs:
+            continue  # inside the overlap prefix — already in previous segment
+        parts.append(seg.text.strip())
+    return " ".join(parts).strip()
