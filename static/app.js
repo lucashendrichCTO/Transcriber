@@ -85,6 +85,16 @@
     chkSaveWav.disabled   = false;
   }
 
+  // Exit button — calls into the pywebview bridge when running as a native
+  // app, falls back to window.close() when opened in a plain browser.
+  document.getElementById("btn-exit").addEventListener("click", () => {
+    if (window.pywebview && window.pywebview._quit) {
+      window.pywebview._quit();
+    } else if (window.close) {
+      window.close();
+    }
+  });
+
   function openSocket() {
     return new Promise((resolve, reject) => {
       const proto = location.protocol === "https:" ? "wss" : "ws";

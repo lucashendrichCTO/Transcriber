@@ -43,19 +43,13 @@ rsync -a \
 LAUNCHER="$APP/Contents/MacOS/$APP_NAME"
 cat > "$LAUNCHER" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
-PORT=8765
-URL="http://127.0.0.1:$PORT"
+# Launcher for Transcriber.app — sets up the Python environment then hands
+# off to main.py, which owns the full lifecycle (server + native window).
 APP_SRC="$(cd "$(dirname "$0")/../Resources/app"; pwd)"
 LOG_DIR="$HOME/Library/Logs/Transcriber"
 LOG="$LOG_DIR/server.log"
 
 mkdir -p "$LOG_DIR"
-
-# If server is already running just open the browser and exit.
-if lsof -nP -iTCP:$PORT -sTCP:LISTEN -t &>/dev/null; then
-  open "$URL"
-  exit 0
-fi
 
 # Locate Python 3.
 PY=""
@@ -83,29 +77,9 @@ source .venv/bin/activate
 # Install / upgrade deps silently.
 pip install -q -r requirements.txt >> "$LOG" 2>&1
 
-# Kill any stale process on the port.
-STALE=$(lsof -nP -iTCP:$PORT -sTCP:LISTEN -t 2>/dev/null || true)
-if [ -n "$STALE" ]; then
-  echo "$STALE" | xargs kill -9 2>/dev/null || true
-  sleep 0.5
-fi
-
-# Start server in the background; all output goes to the log file.
-echo "[$(date)] Starting Transcriber on port $PORT" >> "$LOG"
-nohup python -m uvicorn app:app \
-  --host 127.0.0.1 \
-  --port $PORT \
-  --log-level warning >> "$LOG" 2>&1 &
-
-# Wait up to 15 s for the server to be ready, then open the browser.
-for i in $(seq 1 30); do
-  if lsof -nP -iTCP:$PORT -sTCP:LISTEN -t &>/dev/null; then
-    break
-  fi
-  sleep 0.5
-done
-
-open "$URL"
+# Hand off to main.py — it starts the server, opens the window, and exits
+# when the window is closed.  All output is redirected to the log file.
+exec python main.py >> "$LOG" 2>&1
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
 

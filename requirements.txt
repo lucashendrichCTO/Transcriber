@@ -3,3 +3,14 @@ fastapi==0.115.12
 uvicorn[standard]==0.34.3
 python-multipart==0.0.20
 requests
+
+# macOS desktop window — pyobjc must be pinned before pywebview so pip uses
+# pre-built cp39 universal2 wheels rather than attempting a source build.
+# Platform markers keep these out of CI (Linux) installs.
+pyobjc-core==11.1;                            sys_platform == "darwin"
+pyobjc-framework-Cocoa==11.1;                 sys_platform == "darwin"
+pyobjc-framework-WebKit==11.1;                sys_platform == "darwin"
+pyobjc-framework-Quartz==11.1;                sys_platform == "darwin"
+pyobjc-framework-UniformTypeIdentifiers==11.1; sys_platform == "darwin"
+pyobjc-framework-security==11.1;              sys_platform == "darwin"
+pywebview==6.2.1;                             sys_platform == "darwin"
