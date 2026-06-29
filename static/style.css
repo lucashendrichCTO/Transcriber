@@ -148,8 +148,9 @@ button:disabled {
 
 #btn-stop:not(:disabled):hover { background: var(--danger-hover); }
 
-/* Device selector */
-#device-row {
+/* Device selectors */
+#device-row,
+#device-row-mic {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -157,7 +158,8 @@ button:disabled {
   color: var(--muted);
 }
 
-#device-select {
+#device-select,
+#mic-select {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -168,9 +170,44 @@ button:disabled {
   min-width: 220px;
 }
 
-#device-select:focus {
+#device-select:focus,
+#mic-select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+#device-select:disabled,
+#mic-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Options row */
+#options-row {
+  display: flex;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.checkbox-label input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Save notification */

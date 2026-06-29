@@ -4,6 +4,8 @@ import os
 import wave
 from pathlib import Path
 
+import numpy as np
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +17,7 @@ app = FastAPI()
 _desktop = Path.home() / "Desktop"
 SAVE_DIR = _desktop if _desktop.exists() else Path.home()
 
-DEBUG_WAV = os.environ.get("DEBUG_WAV", "1") == "1"
+VERBOSE = os.environ.get("VERBOSE", "0") == "1"
 
 # 30-second chunks at 16 kHz / 16-bit mono = 960,000 bytes
 CHUNK_BYTES = 30 * 16000 * 2
@@ -25,12 +27,16 @@ OVERLAP_BYTES = 2 * 16000 * 2
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-def _write_debug_wav(pcm_bytes: bytes, path: Path, sample_rate: int = 16000) -> None:
+def _write_wav(pcm_bytes: bytes, path: Path, sample_rate: int = 16000) -> None:
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(pcm_bytes)
+
+
+# Keep old name as an alias so existing test_wav.py imports continue to work
+_write_debug_wav = _write_wav
 
 
 @app.get("/")
@@ -48,10 +54,18 @@ async def websocket_endpoint(ws: WebSocket):
     overlap_pcm: bytes = b""
     # Transcribed text from each committed 30s chunk
     completed_segments: list[str] = []
-    # Full session PCM kept only for the debug WAV
-    full_pcm: bytearray = bytearray() if DEBUG_WAV else None
+    # Full session PCM kept only when the client requests a WAV save
+    full_pcm: bytearray = bytearray()
 
+    save_wav: bool = False
     previewing = False
+
+    def _reset_session():
+        nonlocal pending_pcm, overlap_pcm, completed_segments, full_pcm
+        pending_pcm = bytearray()
+        overlap_pcm = b""
+        completed_segments = []
+        full_pcm = bytearray()
 
     try:
         while True:
@@ -63,8 +77,16 @@ async def websocket_endpoint(ws: WebSocket):
             if "bytes" in message and message["bytes"]:
                 data = message["bytes"]
                 pending_pcm.extend(data)
-                if DEBUG_WAV:
+                if save_wav:
                     full_pcm.extend(data)
+
+                if VERBOSE:
+                    samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+                    if peak < 0.001:
+                        print(f"[transcriber] received {len(data)} bytes — near-silent (peak={peak:.4f})")
+                    else:
+                        print(f"[transcriber] received {len(data)} bytes — peak={peak:.4f}")
 
                 if previewing:
                     continue
@@ -79,8 +101,9 @@ async def websocket_endpoint(ws: WebSocket):
                         new_overlap = bytes(pending_pcm[-OVERLAP_BYTES:])
                         pending_pcm = bytearray()
 
-                        duration_s = len(to_transcribe) / 32000.0
-                        print(f"[transcriber] committing chunk ({duration_s:.0f}s, skip {skip_secs:.1f}s overlap)")
+                        if VERBOSE:
+                            duration_s = len(to_transcribe) / 32000.0
+                            print(f"[transcriber] committing chunk ({duration_s:.0f}s, skip {skip_secs:.1f}s overlap)")
 
                         text = await loop.run_in_executor(
                             None, transcribe_pcm, to_transcribe, 16000, skip_secs
@@ -110,24 +133,37 @@ async def websocket_endpoint(ws: WebSocket):
             elif "text" in message:
                 cmd = message["text"]
 
-                if cmd == "SAVE":
+                if cmd.startswith("{"):
+                    # JSON config message from the client
+                    import json
+                    try:
+                        cfg = json.loads(cmd)
+                        if cfg.get("type") == "config":
+                            save_wav = bool(cfg.get("save_wav", False))
+                            if VERBOSE:
+                                print(f"[transcriber] config: save_wav={save_wav}")
+                    except Exception:
+                        pass
+
+                elif cmd == "SAVE":
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
-                    if DEBUG_WAV and full_pcm:
-                        wav_path = SAVE_DIR / f"transcript_{timestamp}_debug.wav"
+                    if save_wav and full_pcm:
+                        wav_path = SAVE_DIR / f"transcript_{timestamp}.wav"
                         try:
-                            _write_debug_wav(bytes(full_pcm), wav_path)
-                            print(f"[transcriber] debug WAV saved: {wav_path}  ({len(full_pcm)} bytes, ~{len(full_pcm)/32000:.1f}s)")
+                            _write_wav(bytes(full_pcm), wav_path)
+                            print(f"[transcriber] WAV saved: {wav_path}  ({len(full_pcm)} bytes, ~{len(full_pcm)/32000:.1f}s)")
                         except Exception as exc:
-                            print(f"[transcriber] debug WAV write failed: {exc}")
+                            print(f"[transcriber] WAV write failed: {exc}")
 
                     all_segments = list(completed_segments)
 
                     if pending_pcm:
                         to_transcribe = overlap_pcm + bytes(pending_pcm)
                         skip_secs = len(overlap_pcm) / 32000.0
-                        tail_secs = len(pending_pcm) / 32000.0
-                        print(f"[transcriber] SAVE: transcribing {tail_secs:.0f}s tail + {len(completed_segments)} committed segments")
+                        if VERBOSE:
+                            tail_secs = len(pending_pcm) / 32000.0
+                            print(f"[transcriber] SAVE: transcribing {tail_secs:.0f}s tail + {len(completed_segments)} committed segments")
                         try:
                             loop = asyncio.get_running_loop()
                             tail_text = await loop.run_in_executor(
@@ -138,14 +174,11 @@ async def websocket_endpoint(ws: WebSocket):
                         except Exception as exc:
                             print(f"[transcriber] save tail error: {exc}")
                             await ws.send_json({"type": "error", "text": f"Save failed: {exc}"})
-                            pending_pcm = bytearray()
-                            overlap_pcm = b""
-                            completed_segments = []
-                            if DEBUG_WAV:
-                                full_pcm = bytearray()
+                            _reset_session()
                             continue
                     else:
-                        print(f"[transcriber] SAVE: {len(completed_segments)} committed segments, no pending tail")
+                        if VERBOSE:
+                            print(f"[transcriber] SAVE: {len(completed_segments)} committed segments, no pending tail")
 
                     final_text = " ".join(all_segments)
                     save_path = SAVE_DIR / f"transcript_{timestamp}.txt"
@@ -156,19 +189,10 @@ async def websocket_endpoint(ws: WebSocket):
                         "text": final_text,
                     })
 
-                    # Reset for next session
-                    pending_pcm = bytearray()
-                    overlap_pcm = b""
-                    completed_segments = []
-                    if DEBUG_WAV:
-                        full_pcm = bytearray()
+                    _reset_session()
 
                 elif cmd == "CANCEL":
-                    pending_pcm = bytearray()
-                    overlap_pcm = b""
-                    completed_segments = []
-                    if DEBUG_WAV:
-                        full_pcm = bytearray()
+                    _reset_session()
                     await ws.send_json({"type": "cancelled"})
 
     except (WebSocketDisconnect, RuntimeError):

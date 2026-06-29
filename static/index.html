@@ -20,10 +20,23 @@
   <div id="transcript-box" class="empty" aria-live="polite"></div>
 
   <div id="device-row">
-    <label for="device-select">Audio source</label>
+    <label for="device-select">Meeting audio</label>
     <select id="device-select">
-      <option value="">Default microphone</option>
+      <option value="">Default device</option>
     </select>
+  </div>
+  <div id="device-row-mic">
+    <label for="mic-select">Your microphone</label>
+    <select id="mic-select">
+      <option value="">None</option>
+    </select>
+  </div>
+
+  <div id="options-row">
+    <label class="checkbox-label">
+      <input type="checkbox" id="chk-save-wav" />
+      Save WAV file alongside transcript
+    </label>
   </div>
 
   <div id="controls">

@@ -5,6 +5,14 @@ cd "$(dirname "$0")"
 
 PORT=8765
 URL="http://127.0.0.1:${PORT}"
+VERBOSE_MODE=0
+
+# Parse flags
+for arg in "$@"; do
+  case "$arg" in
+    --verbose|-v) VERBOSE_MODE=1 ;;
+  esac
+done
 
 # Find Python 3.9+
 PY=""
@@ -48,6 +56,10 @@ echo "  Open this URL in your browser (note the port :${PORT}):"
 echo ""
 echo "      ${URL}"
 echo ""
+if [ "$VERBOSE_MODE" = "1" ]; then
+echo "  Verbose logging is ON."
+echo ""
+fi
 echo "  Press Ctrl+C to stop the server."
 echo "  First transcription downloads the Whisper model (~142 MB)."
 echo "────────────────────────────────────────────────────────"
@@ -56,4 +68,8 @@ echo ""
 # Auto-open the browser to the correct URL (2s delay so the server is up)
 ( sleep 5 && command -v open >/dev/null && open "${URL}" ) &
 
-python -m uvicorn app:app --host 127.0.0.1 --port $PORT --log-level info
+if [ "$VERBOSE_MODE" = "1" ]; then
+  VERBOSE=1 python -m uvicorn app:app --host 127.0.0.1 --port $PORT --log-level info
+else
+  python -m uvicorn app:app --host 127.0.0.1 --port $PORT --log-level warning
+fi

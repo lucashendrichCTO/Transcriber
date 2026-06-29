@@ -6,42 +6,56 @@
   const statusText   = document.getElementById("status-text");
   const saveNotice   = document.getElementById("save-notice");
   const deviceSelect = document.getElementById("device-select");
+  const micSelect    = document.getElementById("mic-select");
+  const chkSaveWav   = document.getElementById("chk-save-wav");
 
-  // Populate audio input device list (requires a prior getUserMedia grant to see labels)
   async function populateDevices() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const inputs = devices.filter(d => d.kind === "audioinput");
-      // Keep the default option, add real devices
-      deviceSelect.innerHTML = '<option value="">Default microphone</option>';
+
+      const prevMain = deviceSelect.value;
+      const prevMic  = micSelect.value;
+
+      deviceSelect.innerHTML = '<option value="">Default device</option>';
+      micSelect.innerHTML    = '<option value="">None</option>';
+
       for (const d of inputs) {
-        const opt = document.createElement("option");
-        opt.value = d.deviceId;
-        opt.textContent = d.label || `Microphone ${deviceSelect.options.length}`;
-        deviceSelect.appendChild(opt);
+        const label = d.label || `Microphone ${d.deviceId.slice(0, 6)}`;
+
+        const opt1 = document.createElement("option");
+        opt1.value = d.deviceId;
+        opt1.textContent = label;
+        deviceSelect.appendChild(opt1);
+
+        const opt2 = document.createElement("option");
+        opt2.value = d.deviceId;
+        opt2.textContent = label;
+        micSelect.appendChild(opt2);
       }
+
+      if (prevMain) deviceSelect.value = prevMain;
+      if (prevMic)  micSelect.value    = prevMic;
     } catch (_) {}
   }
 
-  // Enumerate on load (labels may be blank until mic permission granted)
   populateDevices();
   navigator.mediaDevices.addEventListener("devicechange", populateDevices);
 
-  const TARGET_RATE   = 16000;  // Whisper works at 16 kHz mono
-  const SEND_EVERY_MS = 3000;   // push accumulated audio every 3s for live preview
+  const TARGET_RATE   = 16000;
+  const SEND_EVERY_MS = 3000;
 
-  let ws          = null;
-  let audioCtx    = null;
-  let sourceNode  = null;
-  let workletNode = null;
-  let stream      = null;
-  let sendTimer   = null;
+  let ws            = null;
+  let audioCtx      = null;
+  let sourceNode    = null;
+  let micSourceNode = null;
+  let workletNode   = null;
+  let stream        = null;
+  let micStream     = null;
+  let sendTimer     = null;
 
-  // Float32 batches captured since the last send (at audioCtx.sampleRate)
-  let floatChunks = [];
-  // Diagnostics
+  let floatChunks     = [];
   let samplesCaptured = 0;
-  let bytesSent = 0;
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -64,9 +78,11 @@
   }
 
   function resetUI() {
-    btnStart.disabled = false;
-    btnStop.disabled  = true;
+    btnStart.disabled     = false;
+    btnStop.disabled      = true;
     deviceSelect.disabled = false;
+    micSelect.disabled    = false;
+    chkSaveWav.disabled   = false;
   }
 
   function openSocket() {
@@ -74,13 +90,16 @@
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws`);
       ws.binaryType = "arraybuffer";
-      ws.onopen = () => { console.log("[transcriber] WebSocket open"); resolve(); };
+      ws.onopen = () => {
+        console.log("[transcriber] WebSocket open");
+        ws.send(JSON.stringify({ type: "config", save_wav: chkSaveWav.checked }));
+        resolve();
+      };
       ws.onerror = () => {
         setStatus("", "WebSocket error — is the server running?");
         reject();
       };
       ws.onclose = (evt) => {
-        // Only treat as unexpected if we're still in "recording" state
         if (statusDot.className === "recording") {
           console.warn(`[transcriber] WebSocket closed unexpectedly (code ${evt.code}) — stopping timer`);
           clearInterval(sendTimer);
@@ -137,7 +156,6 @@
     for (const c of floatChunks) { merged.set(c, offset); offset += c.length; }
     floatChunks = [];
 
-    // Amplitude check — if peak is near zero, mic is silent or capture is broken
     let peak = 0;
     for (let i = 0; i < merged.length; i++) {
       const abs = Math.abs(merged[i]);
@@ -148,44 +166,55 @@
 
     const pcm16 = toInt16PCM(merged, audioCtx.sampleRate);
     ws.send(pcm16.buffer);
-    bytesSent += pcm16.buffer.byteLength;
-    console.log(`[transcriber] sent ${pcm16.length} samples (${pcm16.buffer.byteLength} bytes); total ${bytesSent} bytes`);
   }
 
   btnStart.addEventListener("click", async () => {
     const selectedDeviceId = deviceSelect.value;
-    const audioConstraints = {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-      ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}),
-    };
+    const selectedMicId    = micSelect.value;
+
+    const baseConstraints = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+
+    // Open the main audio source (meeting audio / BlackHole)
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { ...baseConstraints, ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}) },
+        video: false,
+      });
     } catch (e) {
-      setStatus("", "Audio source access denied");
+      setStatus("", "Meeting audio source access denied");
       return;
     }
-    // Re-populate device list now that we have permission (labels become visible)
-    await populateDevices();
-    if (selectedDeviceId) deviceSelect.value = selectedDeviceId;
+
+    // Open microphone if one is selected
+    if (selectedMicId) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { ...baseConstraints, deviceId: { exact: selectedMicId } },
+          video: false,
+        });
+      } catch (e) {
+        console.warn("[transcriber] mic access denied — continuing without microphone", e);
+        micStream = null;
+      }
+    }
+
     deviceSelect.disabled = true;
+    micSelect.disabled    = true;
+    chkSaveWav.disabled   = true;
 
     setTranscript("");
     saveNotice.classList.add("hidden");
     samplesCaptured = 0;
-    bytesSent = 0;
-    floatChunks = [];
+    floatChunks     = [];
 
     try {
       await openSocket();
     } catch {
       stream.getTracks().forEach(t => t.stop());
+      micStream?.getTracks().forEach(t => t.stop());
       return;
     }
 
-    // Use the NATIVE sample rate (do not force 16 kHz — that can yield silent
-    // capture on hardware running at 44.1/48 kHz). We downsample in JS instead.
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") await audioCtx.resume();
     console.log("[transcriber] AudioContext sampleRate:", audioCtx.sampleRate);
@@ -196,13 +225,12 @@
       console.error("[transcriber] failed to load AudioWorklet:", err);
       setStatus("", "Audio init failed — see console");
       stream.getTracks().forEach(t => t.stop());
+      micStream?.getTracks().forEach(t => t.stop());
       resetUI();
       return;
     }
 
-    sourceNode  = audioCtx.createMediaStreamSource(stream);
     workletNode = new AudioWorkletNode(audioCtx, "pcm-worklet");
-
     workletNode.port.onmessage = (e) => {
       const batch = e.data;
       if (!(batch instanceof Float32Array) || batch.length === 0) return;
@@ -210,8 +238,16 @@
       samplesCaptured += batch.length;
     };
 
+    // Connect sources directly to worklet — Web Audio sums them automatically
+    sourceNode = audioCtx.createMediaStreamSource(stream);
     sourceNode.connect(workletNode);
-    // Worklet outputs silence (it only reads input), so this won't cause feedback.
+
+    if (micStream) {
+      micSourceNode = audioCtx.createMediaStreamSource(micStream);
+      micSourceNode.connect(workletNode);
+      console.log("[transcriber] microphone mixed in");
+    }
+
     workletNode.connect(audioCtx.destination);
 
     sendTimer = setInterval(() => {
@@ -219,7 +255,8 @@
       flushAudio();
     }, SEND_EVERY_MS);
 
-    setStatus("recording", "Recording…");
+    const sources = micStream ? "meeting audio + microphone" : "meeting audio only";
+    setStatus("recording", `Recording… (${sources})`);
     btnStart.disabled = true;
     btnStop.disabled  = false;
   });
@@ -231,13 +268,14 @@
     clearInterval(sendTimer);
     sendTimer = null;
 
-    if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); }
-    if (sourceNode) sourceNode.disconnect();
-    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (workletNode)   { workletNode.port.onmessage = null; workletNode.disconnect(); }
+    if (sourceNode)    sourceNode.disconnect();
+    if (micSourceNode) { micSourceNode.disconnect(); micSourceNode = null; }
+    if (stream)        stream.getTracks().forEach(t => t.stop());
+    if (micStream)     { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
 
-    // Send any remaining audio, then ask the server to transcribe + save
     flushAudio();
-    console.log(`[transcriber] stop — captured ${samplesCaptured} samples, sent ${bytesSent} bytes total`);
+    console.log(`[transcriber] stop — captured ${samplesCaptured} samples total`);
     if (audioCtx) { await audioCtx.close(); audioCtx = null; }
 
     if (ws && ws.readyState === WebSocket.OPEN) {

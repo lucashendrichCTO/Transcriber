@@ -1,0 +1,27 @@
+{
+  "name": "transcriber",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "vitest run tests/js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucashendrichCTO/Transcriber.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/lucashendrichCTO/Transcriber/issues"
+  },
+  "homepage": "https://github.com/lucashendrichCTO/Transcriber#readme",
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}

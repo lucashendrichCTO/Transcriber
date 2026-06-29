@@ -32,7 +32,7 @@ def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000, skip_secs: float 
         audio,
         language="en",
         vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 300},
+        vad_parameters={"min_silence_duration_ms": 300, "threshold": 0.3},
     )
 
     parts = []
