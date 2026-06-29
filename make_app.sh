@@ -43,16 +43,69 @@ rsync -a \
 LAUNCHER="$APP/Contents/MacOS/$APP_NAME"
 cat > "$LAUNCHER" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
-# Resolve the app source directory relative to this launcher.
+PORT=8765
+URL="http://127.0.0.1:$PORT"
 APP_SRC="$(cd "$(dirname "$0")/../Resources/app"; pwd)"
+LOG_DIR="$HOME/Library/Logs/Transcriber"
+LOG="$LOG_DIR/server.log"
 
-# Open a Terminal window running the server. The window title helps users
-# identify it. The ; exit closes the shell when the server is stopped (Ctrl+C).
-osascript \
-  -e 'tell application "Terminal"' \
-  -e '  activate' \
-  -e "  do script \"echo 'Starting Transcriber…'; cd '$APP_SRC' && ./run.sh; exit\"" \
-  -e 'end tell'
+mkdir -p "$LOG_DIR"
+
+# If server is already running just open the browser and exit.
+if lsof -nP -iTCP:$PORT -sTCP:LISTEN -t &>/dev/null; then
+  open "$URL"
+  exit 0
+fi
+
+# Locate Python 3.
+PY=""
+for candidate in python3 /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
+  if command -v "$candidate" &>/dev/null; then
+    PY="$candidate"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  osascript -e 'display alert "Transcriber — Python not found" message "Install Python 3 via brew install python, then relaunch." as critical'
+  exit 1
+fi
+
+cd "$APP_SRC"
+
+# Create venv on first run.
+if [ ! -d ".venv" ]; then
+  echo "[$(date)] Creating virtual environment…" >> "$LOG" 2>&1
+  $PY -m venv .venv >> "$LOG" 2>&1
+fi
+
+source .venv/bin/activate
+
+# Install / upgrade deps silently.
+pip install -q -r requirements.txt >> "$LOG" 2>&1
+
+# Kill any stale process on the port.
+STALE=$(lsof -nP -iTCP:$PORT -sTCP:LISTEN -t 2>/dev/null || true)
+if [ -n "$STALE" ]; then
+  echo "$STALE" | xargs kill -9 2>/dev/null || true
+  sleep 0.5
+fi
+
+# Start server in the background; all output goes to the log file.
+echo "[$(date)] Starting Transcriber on port $PORT" >> "$LOG"
+nohup python -m uvicorn app:app \
+  --host 127.0.0.1 \
+  --port $PORT \
+  --log-level warning >> "$LOG" 2>&1 &
+
+# Wait up to 15 s for the server to be ready, then open the browser.
+for i in $(seq 1 30); do
+  if lsof -nP -iTCP:$PORT -sTCP:LISTEN -t &>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+
+open "$URL"
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
 
