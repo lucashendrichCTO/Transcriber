@@ -5,3 +5,7 @@ __pycache__/
 .env
 *.txt.bak
 node_modules/
+*.app/
+icon/AppIcon.png
+icon/AppIcon.iconset/
+Transcriber.zip

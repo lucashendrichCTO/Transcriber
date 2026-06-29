@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Black background gradient (slight vignette) -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#1a1a1a"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+
+    <!-- Silver body gradient -->
+    <linearGradient id="bodyGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#5a5a5a"/>
+      <stop offset="20%"  stop-color="#9a9a9a"/>
+      <stop offset="45%"  stop-color="#e8e8e8"/>
+      <stop offset="60%"  stop-color="#ffffff"/>
+      <stop offset="75%"  stop-color="#d0d0d0"/>
+      <stop offset="100%" stop-color="#6a6a6a"/>
+    </linearGradient>
+
+    <!-- Silver stem/stand gradient -->
+    <linearGradient id="stemGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#4a4a4a"/>
+      <stop offset="35%"  stop-color="#c8c8c8"/>
+      <stop offset="55%"  stop-color="#e8e8e8"/>
+      <stop offset="75%"  stop-color="#b0b0b0"/>
+      <stop offset="100%" stop-color="#4a4a4a"/>
+    </linearGradient>
+
+    <!-- Wave stroke gradient — matches the mic body silver -->
+    <linearGradient id="waveGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#aaaaaa"/>
+      <stop offset="50%"  stop-color="#e0e0e0"/>
+      <stop offset="100%" stop-color="#888888"/>
+    </linearGradient>
+
+    <!-- Clip path for the mic head (capsule) -->
+    <clipPath id="headClip">
+      <rect x="376" y="130" width="272" height="370" rx="136" ry="136"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+
+  <!-- ── Sound waves LEFT ── -->
+  <!-- Wave 1 (innermost) -->
+  <path d="M 348 380 Q 310 430 310 512 Q 310 594 348 644"
+        fill="none" stroke="url(#waveGrad)" stroke-width="28"
+        stroke-linecap="round" opacity="0.95"/>
+  <!-- Wave 2 (middle) -->
+  <path d="M 292 340 Q 238 410 238 512 Q 238 614 292 684"
+        fill="none" stroke="url(#waveGrad)" stroke-width="26"
+        stroke-linecap="round" opacity="0.80"/>
+  <!-- Wave 3 (outermost) -->
+  <path d="M 236 300 Q 166 392 166 512 Q 166 632 236 724"
+        fill="none" stroke="url(#waveGrad)" stroke-width="24"
+        stroke-linecap="round" opacity="0.60"/>
+
+  <!-- ── Sound waves RIGHT ── -->
+  <!-- Wave 1 (innermost) -->
+  <path d="M 676 380 Q 714 430 714 512 Q 714 594 676 644"
+        fill="none" stroke="url(#waveGrad)" stroke-width="28"
+        stroke-linecap="round" opacity="0.95"/>
+  <!-- Wave 2 (middle) -->
+  <path d="M 732 340 Q 786 410 786 512 Q 786 614 732 684"
+        fill="none" stroke="url(#waveGrad)" stroke-width="26"
+        stroke-linecap="round" opacity="0.80"/>
+  <!-- Wave 3 (outermost) -->
+  <path d="M 788 300 Q 858 392 858 512 Q 858 632 788 724"
+        fill="none" stroke="url(#waveGrad)" stroke-width="24"
+        stroke-linecap="round" opacity="0.60"/>
+
+  <!-- ── Microphone body ── -->
+
+  <!-- Outer dark border of the capsule -->
+  <rect x="366" y="120" width="292" height="390" rx="146" ry="146"
+        fill="#1c1c1c" stroke="#111" stroke-width="2"/>
+
+  <!-- Main silver capsule body -->
+  <rect x="376" y="130" width="272" height="370" rx="136" ry="136"
+        fill="url(#bodyGrad)"/>
+
+  <!-- Horizontal grille slits (7 slits) -->
+  <g clip-path="url(#headClip)">
+    <line x1="390" y1="232" x2="634" y2="232" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+    <line x1="385" y1="272" x2="639" y2="272" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+    <line x1="382" y1="312" x2="642" y2="312" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+    <line x1="380" y1="352" x2="644" y2="352" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+    <line x1="382" y1="392" x2="642" y2="392" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+    <line x1="386" y1="432" x2="638" y2="432" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+    <line x1="394" y1="470" x2="630" y2="470" stroke="#2a2a2a" stroke-width="14" stroke-linecap="round"/>
+  </g>
+
+  <!-- Subtle highlight sheen on capsule top-left -->
+  <ellipse cx="460" cy="220" rx="60" ry="90"
+           fill="white" opacity="0.12" transform="rotate(-15 460 220)"/>
+
+  <!-- ── Neck / stem ── -->
+  <rect x="488" y="500" width="48" height="110" rx="10" ry="10"
+        fill="url(#stemGrad)"/>
+
+  <!-- ── Horizontal crossbar ── -->
+  <rect x="390" y="606" width="244" height="42" rx="21" ry="21"
+        fill="url(#stemGrad)"/>
+
+  <!-- ── Base ── -->
+  <rect x="440" y="648" width="144" height="28" rx="14" ry="14"
+        fill="url(#stemGrad)"/>
+</svg>
