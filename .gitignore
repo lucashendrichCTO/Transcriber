@@ -8,4 +8,10 @@ node_modules/
 *.app/
 icon/AppIcon.png
 icon/AppIcon.iconset/
+icon/AppIcon.icns
 Transcriber.zip
+
+# PyInstaller build artifacts
+build/
+dist/
+.pytest_cache/

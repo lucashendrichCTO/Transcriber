@@ -9,38 +9,70 @@
   const micSelect    = document.getElementById("mic-select");
   const chkSaveWav   = document.getElementById("chk-save-wav");
 
-  async function populateDevices() {
+  // Desktop (pywebview) mode delegates capture to Python (sounddevice): the
+  // server injects window.__DESKTOP__ so we don't rely on the WebView's
+  // getUserMedia, which returns silent audio when embedded. We also fall back to
+  // the Python path if mediaDevices is missing entirely.
+  const PYTHON_AUDIO = window.__DESKTOP__ === true || !navigator.mediaDevices;
+
+  // ── Device list ───────────────────────────────────────────────────────────
+
+  function _applyDeviceList(inputs) {
+    const prevMain = deviceSelect.value;
+    const prevMic  = micSelect.value;
+
+    deviceSelect.innerHTML = '<option value="">Default device</option>';
+    micSelect.innerHTML    = '<option value="">None</option>';
+
+    for (const d of inputs) {
+      const label = d.label || `Microphone ${(d.deviceId || "").slice(0, 6)}`;
+
+      const opt1 = document.createElement("option");
+      opt1.value = d.deviceId; opt1.textContent = label;
+      deviceSelect.appendChild(opt1);
+
+      const opt2 = document.createElement("option");
+      opt2.value = d.deviceId; opt2.textContent = label;
+      micSelect.appendChild(opt2);
+    }
+
+    if (prevMain) deviceSelect.value = prevMain;
+    if (prevMic)  micSelect.value    = prevMic;
+  }
+
+  // Desktop (pywebview) path — fetch device list from Python/sounddevice
+  async function fetchDevices() {
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const inputs = devices.filter(d => d.kind === "audioinput");
-
-      const prevMain = deviceSelect.value;
-      const prevMic  = micSelect.value;
-
-      deviceSelect.innerHTML = '<option value="">Default device</option>';
-      micSelect.innerHTML    = '<option value="">None</option>';
-
-      for (const d of inputs) {
-        const label = d.label || `Microphone ${d.deviceId.slice(0, 6)}`;
-
-        const opt1 = document.createElement("option");
-        opt1.value = d.deviceId;
-        opt1.textContent = label;
-        deviceSelect.appendChild(opt1);
-
-        const opt2 = document.createElement("option");
-        opt2.value = d.deviceId;
-        opt2.textContent = label;
-        micSelect.appendChild(opt2);
-      }
-
-      if (prevMain) deviceSelect.value = prevMain;
-      if (prevMic)  micSelect.value    = prevMic;
+      const resp = await fetch("/devices");
+      const { devices } = await resp.json();
+      _applyDeviceList(devices || []);
     } catch (_) {}
   }
 
-  populateDevices();
-  navigator.mediaDevices.addEventListener("devicechange", populateDevices);
+  // Browser path — use WebRTC device enumeration
+  async function populateDevices() {
+    try {
+      // Trigger permission prompt so WKWebView returns real device labels
+      const probe = await navigator.mediaDevices.enumerateDevices();
+      if (!probe.some(d => d.label)) {
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          s.getTracks().forEach(t => t.stop());
+        } catch (_) {}
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      _applyDeviceList(devices.filter(d => d.kind === "audioinput"));
+    } catch (_) {}
+  }
+
+  if (PYTHON_AUDIO) {
+    fetchDevices();
+  } else {
+    populateDevices();
+    navigator.mediaDevices.addEventListener("devicechange", populateDevices);
+  }
+
+  // ── State ─────────────────────────────────────────────────────────────────
 
   const TARGET_RATE   = 16000;
   const SEND_EVERY_MS = 3000;
@@ -56,6 +88,8 @@
 
   let floatChunks     = [];
   let samplesCaptured = 0;
+
+  // ── UI helpers ─────────────────────────────────────────────────────────────
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -85,15 +119,7 @@
     chkSaveWav.disabled   = false;
   }
 
-  // Exit button — calls into the pywebview bridge when running as a native
-  // app, falls back to window.close() when opened in a plain browser.
-  document.getElementById("btn-exit").addEventListener("click", () => {
-    if (window.pywebview && window.pywebview._quit) {
-      window.pywebview._quit();
-    } else if (window.close) {
-      window.close();
-    }
-  });
+  // ── WebSocket ─────────────────────────────────────────────────────────────
 
   function openSocket() {
     return new Promise((resolve, reject) => {
@@ -111,10 +137,10 @@
       };
       ws.onclose = (evt) => {
         if (statusDot.className === "recording") {
-          console.warn(`[transcriber] WebSocket closed unexpectedly (code ${evt.code}) — stopping timer`);
+          console.warn(`[transcriber] WebSocket closed unexpectedly (code ${evt.code})`);
           clearInterval(sendTimer);
           sendTimer = null;
-          setStatus("", "Connection lost — server may have crashed. Stop and restart recording.");
+          setStatus("", "Connection lost — stop and restart recording.");
         }
       };
       ws.onmessage = (evt) => {
@@ -138,6 +164,8 @@
       };
     });
   }
+
+  // ── Browser-mode audio helpers ────────────────────────────────────────────
 
   // Downsample Float32 @ inRate -> Int16 @ TARGET_RATE (mono)
   function toInt16PCM(float32, inRate) {
@@ -178,13 +206,42 @@
     ws.send(pcm16.buffer);
   }
 
+  // ── Start button ──────────────────────────────────────────────────────────
+
   btnStart.addEventListener("click", async () => {
     const selectedDeviceId = deviceSelect.value;
     const selectedMicId    = micSelect.value;
 
+    setTranscript("");
+    saveNotice.classList.add("hidden");
+
+    if (PYTHON_AUDIO) {
+      // Desktop (pywebview) mode: Python captures audio via sounddevice
+      try {
+        await openSocket();
+      } catch {
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        type: "start",
+        meeting_device: selectedDeviceId,
+        mic_device: selectedMicId,
+      }));
+
+      deviceSelect.disabled = true;
+      micSelect.disabled    = true;
+      chkSaveWav.disabled   = true;
+      samplesCaptured = 0;
+      setStatus("recording", "Recording…");
+      btnStart.disabled = true;
+      btnStop.disabled  = false;
+      return;
+    }
+
+    // Browser mode: capture audio client-side via getUserMedia + AudioWorklet
     const baseConstraints = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 
-    // Open the main audio source (meeting audio / BlackHole)
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { ...baseConstraints, ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}) },
@@ -195,7 +252,6 @@
       return;
     }
 
-    // Open microphone if one is selected
     if (selectedMicId) {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
@@ -211,9 +267,6 @@
     deviceSelect.disabled = true;
     micSelect.disabled    = true;
     chkSaveWav.disabled   = true;
-
-    setTranscript("");
-    saveNotice.classList.add("hidden");
     samplesCaptured = 0;
     floatChunks     = [];
 
@@ -248,7 +301,6 @@
       samplesCaptured += batch.length;
     };
 
-    // Connect sources directly to worklet — Web Audio sums them automatically
     sourceNode = audioCtx.createMediaStreamSource(stream);
     sourceNode.connect(workletNode);
 
@@ -271,10 +323,24 @@
     btnStop.disabled  = false;
   });
 
+  // ── Stop button ───────────────────────────────────────────────────────────
+
   btnStop.addEventListener("click", async () => {
     setStatus("processing", "Processing…");
     btnStop.disabled = true;
 
+    if (PYTHON_AUDIO) {
+      // Python handles everything — just tell the server to save
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send("SAVE");
+      } else {
+        setStatus("", "Connection was lost — transcript not saved. Reload and try again.");
+        resetUI();
+      }
+      return;
+    }
+
+    // Browser mode: tear down audio graph, flush remaining PCM, then save
     clearInterval(sendTimer);
     sendTimer = null;
 

@@ -225,6 +225,127 @@ def test_save_wav_without_config_writes_no_wav(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# /devices endpoint
+# ---------------------------------------------------------------------------
+
+def test_devices_endpoint_returns_json(client):
+    resp = client.get("/devices")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "devices" in data
+    assert isinstance(data["devices"], list)
+
+
+def test_devices_endpoint_items_have_required_keys(client):
+    """Each device entry must have deviceId, label, and kind."""
+    resp = client.get("/devices")
+    for d in resp.json().get("devices", []):
+        assert "deviceId" in d
+        assert "label" in d
+        assert d.get("kind") == "audioinput"
+
+
+def test_devices_endpoint_returns_empty_list_when_sounddevice_fails(client, monkeypatch):
+    """If sounddevice raises, /devices returns an empty list rather than 500."""
+    import sys
+    import types
+
+    # Inject a broken sounddevice module
+    fake = types.ModuleType("sounddevice")
+    def _boom(*a, **kw): raise RuntimeError("no audio hw")
+    fake.query_devices = _boom
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)
+
+    resp = client.get("/devices")
+    assert resp.status_code == 200
+    assert resp.json()["devices"] == []
+
+
+# ---------------------------------------------------------------------------
+# Python-capture mode (JSON start command)
+# ---------------------------------------------------------------------------
+
+class _FakeInputStream:
+    """No-op sounddevice.InputStream — never fires the callback."""
+    def __init__(self, **kwargs):
+        pass
+    def start(self): pass
+    def stop(self): pass
+    def close(self): pass
+
+
+def test_python_start_then_save_returns_saved(client, tmp_path, monkeypatch):
+    """start JSON + SAVE must always return 'saved', even with no audio."""
+    import sys, types, app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.InputStream = _FakeInputStream
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "config", "save_wav": False}))
+        ws.send_text(json.dumps({"type": "start", "meeting_device": "", "mic_device": ""}))
+        ws.send_text("SAVE")
+        msg = _recv_json(ws)
+
+    assert msg["type"] == "saved"
+    assert Path(msg["path"]).exists()
+
+
+def test_python_start_produces_audio_from_callback(client, tmp_path, monkeypatch):
+    """When the InputStream callback fires with PCM data it reaches pending_pcm."""
+    import sys, types, threading, time, numpy as np, app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    callbacks: list = []
+
+    class _CallbackCapture:
+        def __init__(self, **kwargs):
+            callbacks.append(kwargs.get("callback"))
+        def start(self): pass
+        def stop(self): pass
+        def close(self): pass
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.InputStream = _CallbackCapture
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "config", "save_wav": False}))
+        ws.send_text(json.dumps({"type": "start", "meeting_device": "", "mic_device": ""}))
+
+        # Let the capture task spin up, then fire the callback from a thread
+        time.sleep(0.3)
+        if callbacks:
+            audio = np.ones((4096, 1), dtype=np.float32) * 0.1
+            callbacks[0](audio, 4096, None, None)
+            time.sleep(0.2)
+
+        ws.send_text("SAVE")
+        msg = _recv_json(ws)
+
+    assert msg["type"] == "saved"
+
+
+def test_python_start_cancel_resets_session(client, tmp_path, monkeypatch):
+    """CANCEL after start should return 'cancelled' and clear the session."""
+    import sys, types, app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.InputStream = _FakeInputStream
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "start", "meeting_device": "", "mic_device": ""}))
+        ws.send_text("CANCEL")
+        msg = _recv_json(ws)
+
+    assert msg["type"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
 # Independent connections are isolated
 # ---------------------------------------------------------------------------
 
