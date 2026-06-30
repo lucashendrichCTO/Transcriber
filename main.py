@@ -17,7 +17,10 @@ import threading
 import time
 
 import uvicorn
-import webview
+
+# NOTE: pywebview (`webview`) is imported lazily inside __main__, not here.
+# It's a darwin-only dependency, so a top-level import breaks `import main` on
+# Linux — which the CI test runner does to test the pure-logic helpers below.
 
 # Desktop mode captures audio in Python (sounddevice), NOT via the WebView's
 # getUserMedia. WKWebView's getUserMedia returns silent PCM inside an embedded
@@ -84,6 +87,8 @@ if __name__ == "__main__":
     # main.py from the top and launches a SECOND app window (the "app relaunches
     # itself" bug). freeze_support() makes the child run its worker and exit.
     multiprocessing.freeze_support()
+
+    import webview  # darwin-only; imported here so `import main` works on Linux CI
 
     log("=== Transcriber desktop launching ===")
 
