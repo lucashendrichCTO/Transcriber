@@ -27,7 +27,8 @@ never has TCC problems.
 ./make_app.sh --install
 ```
 Builds `Transcriber.app` via **PyInstaller** and installs to `/Applications`.
-Audio is captured **in Python** via `sounddevice` (PortAudio). See the TCC note below.
+Audio is captured **in Python** via `sounddevice` (PortAudio), not the embedded
+WebView — see the TCC note below for why.
 
 To install deps manually:
 ```bash
@@ -35,60 +36,108 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Testing
+
+```bash
+python -m pytest tests/ --ignore=tests/js -v --tb=short   # all Python tests
+npm test                                                   # JS tests (vitest, tests/js/)
+python -m pytest tests/test_websocket.py -v                # single file
+python -m pytest tests/test_websocket.py::test_websocket_connects -v  # single test
+```
+
+Two marker-gated groups are skipped by default (see `pytest.ini`):
+- `hardware` (`tests/test_audio_capture.py`) — needs a real audio input device.
+- `bundle` (`tests/test_bundle.py`) — needs a built `Transcriber.app` (run `make_app.sh` first). `deploy.sh` runs these separately, post-build.
+
+CI (`.github/workflows/test.yml`) runs Python tests on Linux — darwin-only deps
+(`pyobjc*`, `pywebview`, `sounddevice`) are skipped there via platform markers in
+`requirements.txt`, and `main.py` imports `webview` lazily inside `__main__` so
+the module still imports on Linux for the pure-logic tests. JS tests run separately via `npm install && npm test`.
+
+`deploy.sh --test-only` runs the same pre-build suite `deploy.sh` runs before a
+real build; `--build-only` skips straight to building.
+
 ## Architecture
 
 Local audio transcription tool — nothing leaves the machine. **Two capture paths**
-feed the same server; the client auto-detects which to use (`PYTHON_AUDIO =
-!navigator.mediaDevices`):
+feed the same FastAPI server and WebSocket protocol:
 
 ```
-Browser mode (run.sh, real browser):
-  static/app.js  AudioWorklet → Float32 → 16 kHz Int16 PCM
+Browser mode (run.sh, real browser or a plain browser tab):
+  static/app.js  getUserMedia → AudioWorklet → Float32 → 16 kHz Int16 PCM
     └─► WebSocket /ws (binary frames) ─┐
-                                       ├─► app.py ─► transcriber.py (faster-whisper)
-Desktop mode (Transcriber.app, WKWebView):  │
-  app.js sends {"type":"start",...} ──► app.py captures via audio.py (sounddevice)
-                                       ─┘        │
-                                  Accumulates raw PCM, live-preview transcribes
-                                  On SAVE: final transcription → ~/Desktop/transcript_*.txt
+                                       ├─► app.py (chunked accumulate+transcribe) ─► transcriber.py (faster-whisper)
+Desktop mode (Transcriber.app, pywebview/WKWebView):        │
+  app.js sends {"type":"start", meeting_device, mic_device} │
+    └─► app.py's _python_capture() opens sounddevice        │
+        InputStream(s) via audio.py, mixes samples, ────────┘
+        feeds the same PCM accumulator
+                                  On SAVE: final tail transcription → ~/Desktop/transcript_*.txt
 ```
 
-**Desktop mode uses WebView capture.** Once the app is a real signed bundle (see
-below), `navigator.mediaDevices` *is* available inside pywebview's WKWebView, so
-the desktop app captures audio with `getUserMedia` + AudioWorklet exactly like the
-real browser — WebKit shows an "Allow … to use your microphone" prompt on first
-use. The Python `sounddevice` path (`audio.py` + `GET /devices` + a JSON
-`{"type":"start",...}` frame) remains as an automatic fallback for any environment
-where `navigator.mediaDevices` is missing (`PYTHON_AUDIO = !navigator.mediaDevices`).
+**Capture-path selection.** The server sets `DESKTOP_CAPTURE` from the
+`TRANSCRIBER_DESKTOP` env var (set by `main.py` before importing `app`). If set,
+`GET /` injects `window.__DESKTOP__ = true` into `index.html`. The client picks
+its capture path with `PYTHON_AUDIO = window.__DESKTOP__ === true ||
+!navigator.mediaDevices` (`static/app.js`). Browser mode leaves `__DESKTOP__`
+unset and always uses `getUserMedia`.
+
+### Why desktop mode captures audio in Python, not via the WebView
+
+An earlier version had the desktop app rely on pywebview's embedded WKWebView
+`getUserMedia`, on the theory that a properly signed bundle would make WebKit
+treat it like a real browser. In practice the **embedded** WKWebView's
+`getUserMedia` returns silent PCM even after the mic permission prompt is
+granted. The fix (see git history: "Fix desktop app: launch crash, silent
+capture, choppy audio, self-relaunch") was to always capture in Python via
+`sounddevice`/PortAudio for desktop builds — `audio.py` + `GET /devices` + a
+JSON `{"type":"start", meeting_device, mic_device}` WebSocket frame — and drop
+the WebView-capture path entirely for that mode. macOS still prompts for
+microphone access because `sounddevice` opening a real input stream is what
+triggers TCC, driven by `NSMicrophoneUsageDescription` + the audio-input
+entitlement on the signed bundle.
+
+### Two-input mixing (desktop mode)
+
+Desktop mode can capture **two simultaneous input devices** — a "meeting audio"
+source (e.g. a virtual loopback device like BlackHole) and a real microphone —
+selected independently in the UI (`deviceSelect` / `micSelect`). In
+`app.py`'s `_python_capture()`, each device gets its own `sounddevice.InputStream`
+and per-stream float32 accumulator; the two streams are **summed sample-for-sample
+once both have buffered a common span**, not concatenated — concatenating
+interleaves 4096-sample callback blocks (A,B,A,B…), doubling duration and
+gutting every other ~256ms of audio. A `MAX_BACKLOG` bound (2s) drops the
+oldest excess from a fast stream so clock drift between the two independent
+PortAudio streams can't grow unbounded.
 
 ### macOS microphone permission (TCC) — why the app must be a real bundle
 
 macOS binds microphone (and BlackHole/CoreAudio input) permission to **code
-identity**, and WKWebView only offers `navigator.mediaDevices` to an app with a
-proper identity + `NSMicrophoneUsageDescription`. An earlier build shipped the app
-as a shell script that `exec`'d Apple's shared
-`/Library/Developer/CommandLineTools/usr/bin/python3`; the app had no real identity,
-so `navigator.mediaDevices` was unavailable and mic access never worked.
+identity**. An earlier build shipped the app as a shell script that `exec`'d
+Apple's shared `/Library/Developer/CommandLineTools/usr/bin/python3`; the app
+had no real identity, so permission never stuck correctly.
 
 The fix: build with **PyInstaller** so `Contents/MacOS/Transcriber` is a genuine
 Mach-O executable with Python embedded, ad-hoc signed with `entitlements.plist`
 (`com.apple.security.device.audio-input`) and `NSMicrophoneUsageDescription` in
-Info.plist. With a real identity, WebKit grants `getUserMedia` and shows its
-microphone prompt. `tests/test_bundle.py` enforces the bundle properties so the
-regression cannot return.
+Info.plist. `tests/test_bundle.py` (the `bundle` marker) enforces the bundle
+properties so the regression cannot return.
 
 **Install note:** on first launch, click **Allow** on the microphone prompt. The
 app needs only **Microphone** permission — *not* Screen & System Audio Recording
 (that's for ScreenCaptureKit, which this app does not use). If a stale grant
 lingers from an old build: `tccutil reset Microphone com.lucashendrich.transcriber`
 and, if needed, delete `~/Library/Application Support/Transcriber` to clear the
-WebView's cached per-origin permission.
+WebView's cached per-origin permission data.
 
-The WebSocket protocol is asymmetric: the client sends **binary** frames (raw
-PCM) for audio and **text** frames for control commands (`SAVE`, `CANCEL`). The
+### WebSocket protocol
+
+Asymmetric: the client sends **binary** frames (raw PCM, browser mode only) or
+**text** frames for JSON config/control (`{"type":"config","save_wav":bool}`,
+`{"type":"start","meeting_device":...,"mic_device":...}`, `SAVE`, `CANCEL`). The
 server replies with JSON messages tagged by `type` (`transcript`, `saved`,
-`error`, `cancelled`). PCM contract: 16-bit signed little-endian, mono, 16 kHz.
-Note `CANCEL` is implemented server-side but the UI has no button wired to it.
+`error`, `cancelled`). PCM contract (both paths): 16-bit signed little-endian,
+mono, 16 kHz.
 
 **Why raw PCM, not webm:** an earlier version sent Chrome's `MediaRecorder` webm
 chunks. A webm stream that is cut mid-recording is unfinalized, and ffmpeg/PyAV
@@ -96,30 +145,47 @@ decodes **zero frames** from it — so live preview was always empty and the sav
 file came out empty. Raw PCM has no container, so every slice (including a partial
 buffer mid-recording) is always decodable.
 
+### Chunked transcription with overlap
+
+`app.py` accumulates incoming PCM into `pending_pcm`. Every ~3s (client flush
+interval / server capture-loop tick) it runs a live preview pass over whatever
+has accumulated so far. Once `pending_pcm` reaches `CHUNK_BYTES` (30s), that
+chunk is "committed": it's transcribed with a 2s (`OVERLAP_BYTES`) prefix
+carried over from the end of the previous chunk for sentence context, appended
+to `completed_segments`, and `pending_pcm` resets — so the live preview is
+always `completed_segments` (already finalized) + a transcription of whatever's
+accumulated since the last commit. `skip_secs` tells `transcribe_pcm()` to
+discard segments that fall entirely inside the overlap prefix so they aren't
+duplicated. On `SAVE`, any remaining `pending_pcm` tail is transcribed once more
+and appended before writing the final text file.
+
 ### Key files
 
 | File | Purpose |
 |---|---|
-| `app.py` | FastAPI server — `/ws` WebSocket, `/devices` endpoint, accumulates raw PCM, calls transcriber, saves file. Handles both browser binary PCM and Python `sounddevice` capture (JSON `start` frame). Skips a live-preview pass if one is still running. |
+| `app.py` | FastAPI server — `/ws` WebSocket (chunked accumulate + overlap-stitched transcription, session reset), `/devices` endpoint, `_python_capture()` for desktop-mode sounddevice capture + two-stream mixing, WAV debug dump on SAVE (`save_wav` config flag). |
 | `audio.py` | Shared audio helpers for desktop mode — `float_to_pcm16()`, `list_input_devices()`, `open_input_stream()` (sounddevice/PortAudio). Kept separate so capture is unit- and hardware-testable. |
-| `main.py` | Desktop entry point — starts uvicorn in a daemon thread, opens a pywebview window, triggers the mic-permission prompt at launch. PyInstaller's bundle entry. |
-| `transcriber.py` | faster-whisper wrapper — loads Whisper `base` model, `transcribe_pcm()` converts Int16 PCM → float32 numpy array |
+| `main.py` | Desktop entry point — sets `TRANSCRIBER_DESKTOP=1` before importing `app`, starts uvicorn in a daemon thread, opens a pywebview window, guards against a second instance and against a multiprocessing self-relaunch (`freeze_support()`). PyInstaller's bundle entry. |
+| `transcriber.py` | faster-whisper wrapper — loads Whisper `base` model once (module-level cache), `transcribe_pcm()` converts Int16 PCM → float32, runs VAD-filtered transcription, applies `skip_secs` to drop overlap-duplicated segments. |
 | `Transcriber.spec` / `entitlements.plist` | PyInstaller build spec and codesign entitlements (audio-input + hardened-runtime exceptions for CPython). |
 | `make_app.sh` / `deploy.sh` | Build the signed `.app` (PyInstaller) / full test→build→install→verify pipeline. |
-| `static/index.html` | Dark-mode UI — record/stop buttons, live transcript display |
-| `static/app.js` | WebSocket client + main-thread audio: opens `/ws`, downsamples worklet batches to 16 kHz Int16 (`toInt16PCM`), `flushAudio()` sends PCM every 3 s, renders live transcript |
-| `static/worklet-processor.js` | `pcm-worklet` AudioWorkletProcessor — runs on the audio thread, buffers Float32 mic samples in ~4096-sample batches and posts them to the main thread |
+| `static/index.html` | Dark-mode UI — record/stop buttons, meeting/mic device selects, live transcript display. |
+| `static/app.js` | WebSocket client. Branches on `PYTHON_AUDIO` for capture path (desktop: sends `start`/`SAVE` control frames only; browser: `getUserMedia` + AudioWorklet + `toInt16PCM` downsampling + periodic `flushAudio()`). Renders live transcript and save notice. |
+| `static/worklet-processor.js` | `pcm-worklet` AudioWorkletProcessor — runs on the audio thread, buffers Float32 mic samples in ~4096-sample batches and posts them to the main thread. Browser mode only. |
 | `static/style.css` | Dark theme styles |
 | `run.sh` | One-command launcher — creates venv, installs deps, frees the port, auto-opens browser, starts server |
 
 ### Audio capture rationale (why it's built this way)
 
-- The `AudioContext` runs at the **native** hardware rate (e.g. 44.1/48 kHz), not a
-  forced 16 kHz — forcing 16 kHz can yield silent capture on some hardware. JS
-  downsamples to 16 kHz in `toInt16PCM` instead.
-- Capture uses an **AudioWorklet** (audio-thread `process()`), not the deprecated
-  `ScriptProcessorNode`. The worklet only reads input; it's connected to
-  `destination` to stay alive and outputs silence (no feedback).
+- Browser mode's `AudioContext` runs at the **native** hardware rate (e.g.
+  44.1/48 kHz), not a forced 16 kHz — forcing 16 kHz can yield silent capture on
+  some hardware. JS downsamples to 16 kHz in `toInt16PCM` instead.
+- Browser capture uses an **AudioWorklet** (audio-thread `process()`), not the
+  deprecated `ScriptProcessorNode`. The worklet only reads input; it's connected
+  to `destination` to stay alive and outputs silence (no feedback).
+- Desktop mode's `sounddevice.InputStream`s open directly at 16 kHz mono
+  float32 (PortAudio resamples), so no separate downsampling step is needed
+  there.
 
 ### Transcription model
 
@@ -129,22 +195,28 @@ buffer mid-recording) is always decodable.
 
 ### Recording flow
 
-1. User clicks **Start Recording** → browser requests mic, opens WebSocket, starts a Web Audio graph
-2. `pcm-worklet` captures Float32 samples; downsampled to 16 kHz Int16 PCM and sent every 3 seconds
-3. Server accumulates the raw PCM, runs Whisper on the full buffer, returns live transcript
-4. User clicks **Stop & Save** → final Whisper pass → saved to `~/Desktop/transcript_YYYY-MM-DD_HHMMSS.txt`
-5. Session cleared — no audio or text retained in memory after save
-
-## Known open issue
-
-See `DEBUGGING.md`: live transcription can come back empty and the saved file
-empty, despite the browser console confirming audio is captured and sent. The
-server path and `transcribe_pcm()` are verified correct against synthetic PCM, so
-the suspected fault is the *content* of the PCM the browser sends (silence /
-mis-scaled samples that VAD strips). The documented next step is to dump the
-server's accumulated `pcm` buffer to a WAV on SAVE and inspect amplitude before
-changing anything else.
+1. User clicks **Start Recording**. Browser mode: browser requests mic, opens
+   WebSocket, starts a Web Audio graph. Desktop mode: opens WebSocket, sends a
+   `start` frame with the chosen meeting/mic device IDs; the server opens the
+   sounddevice stream(s).
+2. PCM streams into the server continuously (browser: `flushAudio()` every 3s;
+   desktop: `_python_capture()`'s loop). The server transcribes the accumulated
+   buffer on each tick and, once a 30s chunk is complete, commits it with
+   overlap stitching (see above) and sends a live transcript update.
+3. User clicks **Stop & Save** → any WebSocket/Python capture is stopped, the
+   remaining PCM tail is transcribed, appended to the committed segments, and
+   the joined text saved to `~/Desktop/transcript_YYYY-MM-DD_HHMMSS.txt`
+   (falls back to `~/` if no Desktop directory exists). If "save WAV" was
+   checked, the raw PCM is also dumped to a sibling `.wav` file.
+4. Session state (`pending_pcm`, `overlap_pcm`, `completed_segments`,
+   `full_pcm`) is reset — no audio or text retained in memory after save.
 
 ## Environment
 
-No API keys or environment variables required. Fully offline.
+No API keys required. Fully offline. Two optional env vars:
+
+- `VERBOSE=1` — enables extra `[transcriber]` debug logging in `app.py` (peak
+  amplitude on receipt, chunk-commit timing, capture start/stop).
+- `TRANSCRIBER_DESKTOP=1` — set internally by `main.py`; forces desktop
+  (Python/sounddevice) capture mode. Not meant to be set manually for the
+  browser path.
