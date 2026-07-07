@@ -149,12 +149,20 @@ Asymmetric by design:
 
 ## Two ways to run, one codebase
 
-- **`./run.sh`** — browser mode, the "always works" developer path. No
-  building, no code signing, no TCC edge cases (the browser itself owns mic
-  permission).
-- **`./deploy.sh`** or **`./make_app.sh --install`** — builds and installs the
-  signed `Transcriber.app` for end users. This is the only path that exercises
-  the Python-capture / TCC / code-signing machinery described above.
+- **Browser mode** (`./run.sh` on macOS/Linux, or manually `pip install -r
+  requirements.txt && python -m uvicorn app:app` on Windows) — no building, no
+  code signing, no TCC edge cases, since the browser itself owns mic
+  permission. This path is genuinely cross-platform: `app.py`, `audio.py`,
+  and `transcriber.py` have no macOS-only imports (`audio.py`'s
+  `sounddevice`/`pywebview`/`pyobjc*` imports are lazy and gated behind
+  `sys_platform == "darwin"` markers in `requirements.txt`, so they're simply
+  absent on Windows/Linux — this is exercised today by the Linux CI job in
+  `.github/workflows/test.yml`). See [README.md](README.md) for exact
+  Windows steps.
+- **Desktop app mode** (`./deploy.sh` or `./make_app.sh --install`) — builds
+  and installs the signed `Transcriber.app`, **macOS only**. This is the only
+  path that exercises the Python-capture / TCC / code-signing machinery
+  described above; there is no Windows or Linux equivalent bundle.
 
 ## Testing map
 

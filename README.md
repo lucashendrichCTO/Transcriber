@@ -1,18 +1,31 @@
 # Transcriber
 
-A local, offline audio transcriber for macOS. It listens to your meeting audio
-and/or microphone, shows a live transcript as you talk, and saves the final
-text to your Desktop when you stop. Nothing is uploaded anywhere — transcription
-runs entirely on your Mac.
+A local, offline audio transcriber. It listens to your meeting audio and/or
+microphone, shows a live transcript as you talk, and saves the final text to
+your Desktop when you stop. Nothing is uploaded anywhere — transcription runs
+entirely on your machine.
+
+Two ways to use it:
+- **macOS**: a standalone signed `Transcriber.app` (see [Installing the Mac
+  app](#installing-the-mac-app) below).
+- **Any OS with Python and a browser** (Windows, Linux, or macOS without
+  building the app): run the same server locally and use it in Chrome/Edge/
+  Firefox (see [Running in a browser](#running-in-a-browser-windows-linux-macos)
+  below).
 
 ## Requirements
 
-- macOS 12 (Monterey) or later
+- **Mac app**: macOS 12 (Monterey) or later.
+- **Browser version**: Python 3.9+ and a modern browser (Chrome or Edge
+  recommended). Works on Windows, Linux, and macOS.
 - To transcribe **meeting audio** (what's playing through your speakers, e.g.
   a Zoom/Meet call) instead of just your microphone, you need a virtual audio
-  loopback device such as [BlackHole](https://github.com/ExistentialAudio/BlackHole)
-  installed first. Without it, Transcriber can still record your microphone —
-  you just won't have a "meeting audio" device to pick from.
+  loopback device installed first:
+  - macOS: [BlackHole](https://github.com/ExistentialAudio/BlackHole)
+  - Windows: enable **Stereo Mix** in Sound settings, or install a virtual
+    cable driver such as [VB-Audio Virtual Cable](https://vb-audio.com/Cable/)
+  Without one, Transcriber can still record your microphone — you just won't
+  have a "meeting audio" device to pick from.
 
 ## Installing the Mac app
 
@@ -90,19 +103,71 @@ only happens once.
   status message if the connection drops mid-recording; stop, restart the
   app, and try again.
 
-## Developing / running from source without building the app
+## Running in a browser (Windows, Linux, macOS)
 
-For development, you can run the same server in a normal browser tab instead
-of building a signed app — this avoids all of the macOS permission machinery
-above since the browser owns microphone access directly:
+You don't need to build or install anything platform-specific to use
+Transcriber — the same FastAPI server runs anywhere Python does, and the
+browser (not the OS) handles microphone access directly via `getUserMedia`.
+This is also the fastest way to try Transcriber on macOS without building the
+signed app.
+
+### macOS / Linux
 
 ```bash
 cd ~/Transcriber
 ./run.sh
 ```
 
-This creates a Python virtual environment, installs dependencies, and opens
-`http://localhost:8765` in your browser.
+This creates a Python virtual environment, installs dependencies, frees a
+stale port if one is held, and opens `http://localhost:8765` in your default
+browser automatically.
+
+### Windows (Chrome)
+
+1. Install [Python 3.9 or later](https://www.python.org/downloads/windows/)
+   if you don't already have it. During install, check **"Add python.exe to
+   PATH."**
+2. Download or clone this repository, then open **Command Prompt** or
+   **PowerShell** in the project folder.
+3. Create and activate a virtual environment:
+   ```powershell
+   py -3 -m venv .venv
+   .venv\Scripts\Activate.ps1
+   ```
+   (If PowerShell blocks the activation script with an execution-policy
+   error, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+   first, then retry. In Command Prompt, use `.venv\Scripts\activate.bat`
+   instead of the `.ps1` script.)
+4. Install dependencies:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+   (The macOS-only packages in `requirements.txt` — `pyobjc*`, `pywebview`,
+   `sounddevice` — are automatically skipped on Windows; you don't need to do
+   anything special for that.)
+5. Start the server:
+   ```powershell
+   python -m uvicorn app:app --host 127.0.0.1 --port 8765
+   ```
+6. Open **Chrome** and go to `http://localhost:8765`.
+7. Click **Start Recording**. Chrome will ask for microphone permission —
+   click **Allow**. If you want to transcribe meeting/call audio too, select
+   your loopback device (Stereo Mix or VB-Cable, see Requirements above) from
+   the "Meeting audio" dropdown before starting.
+8. Click **Stop & Save** when done. The transcript is written to
+   `%USERPROFILE%\Desktop\transcript_YYYY-MM-DD_HHMMSS.txt`.
+
+The first transcription on a fresh machine downloads the Whisper `base` model
+(~142 MB, one-time, cached under your user profile).
+
+**Windows troubleshooting:**
+- `python`/`py` not recognized — reinstall Python and make sure "Add to PATH"
+  was checked, or use the full path to `python.exe`.
+- Windows Defender Firewall may prompt to allow Python to accept connections
+  the first time you start the server — allow it (the server only listens on
+  `127.0.0.1`, not your network).
+- Port 8765 already in use: find and stop the process with
+  `netstat -ano | findstr :8765` followed by `taskkill /PID <pid> /F`.
 
 See [CLAUDE.md](CLAUDE.md) for the full developer reference (running tests,
 architecture details) and [ONBOARDING.md](ONBOARDING.md) for a deeper
