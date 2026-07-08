@@ -11,8 +11,31 @@ runs entirely on your Mac.
 - To transcribe **meeting audio** (what's playing through your speakers, e.g.
   a Zoom/Meet call) instead of just your microphone, you need a virtual audio
   loopback device such as [BlackHole](https://github.com/ExistentialAudio/BlackHole)
-  installed first. Without it, Transcriber can still record your microphone —
-  you just won't have a "meeting audio" device to pick from.
+  installed **and routed as described below**. Without it, Transcriber can
+  still record your microphone — you just won't have a "meeting audio" device
+  to pick from.
+
+### Setting up meeting-audio capture (BlackHole)
+
+Installing BlackHole is not enough by itself — selecting it in Transcriber
+only tells the app which device to *listen* to. macOS's system audio still
+has to actually be *sent* there, or BlackHole has nothing to capture (it will
+open and "work" but produce pure digital silence, which looks exactly like a
+broken app). Two steps, done once:
+
+1. Install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole).
+2. Open **Audio MIDI Setup** (Applications → Utilities), click the **+** in
+   the bottom-left corner → **Create Multi-Output Device**, and check both
+   **BlackHole 2ch** and your normal output (e.g. "MacBook Pro Speakers" or
+   your headphones). This plays audio out loud as usual *and* duplicates it
+   into BlackHole at the same time — the alternative (setting output directly
+   to BlackHole) would make you unable to hear anything yourself.
+
+Whenever you want to record meeting audio: set **System Settings → Sound →
+Output** to that **Multi-Output Device**, then select **BlackHole 2ch** as the
+meeting audio source inside Transcriber. Switch your Mac's output back to your
+speakers/headphones afterward if you're not recording (a Multi-Output Device
+can be a little awkward for everyday volume-key/AirPods behavior).
 
 ## Installing the Mac app
 
@@ -55,7 +78,10 @@ dependencies and takes a few minutes.
 3. In the app window, pick your audio sources from the two dropdowns:
    - **Meeting audio source** — pick your loopback device (e.g. "BlackHole
      2ch") to capture what's playing on your Mac, such as a call. Leave it on
-     "Default device" to just use your default input.
+     "Default device" to just use your default input. **Before starting**,
+     make sure System Settings → Sound → Output is set to the Multi-Output
+     Device described above — if it's still set to your speakers/headphones/
+     Bluetooth device directly, BlackHole will capture nothing at all.
    - **Microphone** — optionally pick your own mic to record alongside the
      meeting audio (the two are mixed together into a single transcript).
 4. Click **Start Recording**. The transcript fills in live as you talk —
@@ -86,6 +112,16 @@ only happens once.
 - **No "meeting audio" device shows up** — you need a virtual loopback driver
   like [BlackHole](https://github.com/ExistentialAudio/BlackHole) installed;
   macOS has no built-in way to capture its own audio output.
+- **BlackHole is selected but the transcript stays empty / the saved WAV is
+  silent, even though the app looks like it's recording** — this is almost
+  always the system output not actually being routed to BlackHole. Selecting
+  BlackHole in Transcriber only chooses what it *listens* to; macOS still has
+  to be told to *send* audio there. Check **System Settings → Sound → Output**
+  — if it's set to your speakers, headphones, or a Bluetooth device instead of
+  the Multi-Output Device from the setup steps above, BlackHole receives
+  nothing and will faithfully report exact silence. This is not a bug in the
+  app; see [Setting up meeting-audio capture](#setting-up-meeting-audio-capture-blackhole)
+  above.
 - **Nothing saved / connection lost during recording** — the app shows a
   status message if the connection drops mid-recording; stop, restart the
   app, and try again.

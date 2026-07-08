@@ -148,6 +148,30 @@ hardcoded to blame "microphone" permissions even when no microphone was
 selected at all (meeting-audio-only recording); that both showed a misleading
 message and disabled Stop & Save for a condition that wasn't fatal.
 
+**Exact-zero peak ≠ a capture bug — it means nothing is routed to the loopback
+device.** BlackHole (or any virtual loopback device) only carries audio if
+macOS's system *output* is actually sent to it; selecting BlackHole in
+Transcriber only controls what it *listens* to. If the Mac's actual output
+device is still the speakers, headphones, or a Bluetooth device, BlackHole's
+input is genuinely, perfectly silent — the capture pipeline can be working
+correctly end-to-end (steady per-device callback counts in the `heartbeat`
+log lines, no errors, a valid WAV written) and still show `capture peak (5s
+check): 0.00000` forever, because there is truly nothing arriving. This is
+the single most time-consuming thing to debug from a bug report alone, because
+every symptom (no transcript, no error, a "silent WAV") is identical to a real
+permissions or device-resolution bug. The tell in `desktop.log`: a peak of
+*exactly* `0.00000` (not just very small) across multiple attempts, with
+`received_samples` in the heartbeat lines climbing at a normal, steady rate —
+i.e. the stream is healthy and producing frames, they're just all zeros. The
+fix isn't code — it's routing: create a Multi-Output Device in Audio MIDI
+Setup containing BlackHole + the user's real output, and set that as the
+system's actual output device (see `README.md`'s "Setting up meeting-audio
+capture" section). A real microphone (or a Bluetooth mic like Beats) won't
+read *exactly* zero even in a quiet room — actual hardware picks up some
+noise floor — which is a useful way to distinguish "no signal is routed here"
+(loopback device, exact zero) from "it's just quiet" (real mic, small nonzero
+peak).
+
 ### macOS microphone permission (TCC) — why the app must be a real bundle
 
 macOS binds microphone (and BlackHole/CoreAudio input) permission to **code
