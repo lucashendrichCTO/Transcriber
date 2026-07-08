@@ -12,7 +12,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from audio import float_to_pcm16, list_input_devices, open_input_stream
+from audio import list_input_devices, open_input_stream
 from transcriber import transcribe_pcm
 
 app = FastAPI()
@@ -70,10 +70,6 @@ def _write_wav(pcm_bytes: bytes, path: Path, sample_rate: int = 16000) -> None:
         wf.writeframes(pcm_bytes)
 
 
-# Keep old name as an alias so existing test_wav.py imports continue to work
-_write_debug_wav = _write_wav
-
-
 @app.get("/")
 async def index():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -122,7 +118,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     async def _run_preview():
         """Transcribe accumulated PCM and send a live transcript update."""
-        nonlocal previewing, pending_pcm, overlap_pcm, completed_segments
+        nonlocal previewing, pending_pcm, overlap_pcm
         if previewing or not pending_pcm:
             return
         previewing = True

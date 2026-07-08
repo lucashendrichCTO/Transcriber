@@ -1,7 +1,6 @@
 faster-whisper==1.1.1
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
-python-multipart==0.0.20
 requests
 
 # macOS desktop window — pyobjc must be pinned before pywebview so pip uses
