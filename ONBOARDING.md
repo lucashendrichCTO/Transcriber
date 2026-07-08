@@ -160,6 +160,36 @@ bug very hard to diagnose from bug reports alone. Check that log file first
 when troubleshooting any "capture isn't working" report — it now shows
 exactly which device names were opened and how many samples each one produced.
 
+## The other trap: exact-zero peak means routing, not a code bug
+
+After fixing the index-drift and stalled-stream bugs above, one more "capture
+isn't working" report turned out not to be a code bug at all: BlackHole opened
+correctly, produced a perfectly healthy stream of callbacks (`heartbeat` lines
+in the log climbing steadily, exactly matching 16kHz), a valid WAV got written
+— and the peak amplitude was `0.00000`, forever. The reason: **BlackHole is a
+loopback device. Selecting it in Transcriber only controls what it *listens*
+to — it has no sound of its own.** macOS's actual audio *output* device still
+has to be routed to it, or literally nothing arrives. In this case the Mac's
+system output was set to a pair of Bluetooth earbuds the whole time; BlackHole
+was working exactly as designed, faithfully capturing the silence it was
+actually receiving.
+
+This is worth its own heading because it's genuinely hard to tell apart from a
+real bug from a bug report alone — "app doesn't capture transcript or sound"
+looks identical whether the cause is a code defect or an unrouted output
+device. The diagnostic signature that distinguishes them, visible in
+`desktop.log`: a **healthy, steadily-growing `received_samples` count** (proof
+the stream itself is fine) combined with a peak of **exactly `0.00000`**
+across every attempt (not just small — actually zero). A real microphone
+essentially never reads exactly zero even in a silent room, since real
+hardware always has some noise floor; only a loopback device with nothing
+routed to it produces bit-perfect silence. The fix lives entirely outside the
+codebase: create a Multi-Output Device in **Audio MIDI Setup** containing
+BlackHole plus the user's real speakers/headphones, and set that Multi-Output
+Device as the system's actual output — see `README.md`'s "Setting up
+meeting-audio capture" section, which now documents this as a required setup
+step, not an optional nicety.
+
 ## Chunked transcription with overlap stitching
 
 `transcriber.py` wraps `faster-whisper`. `app.py` doesn't transcribe once at
