@@ -172,3 +172,42 @@ The first transcription on a fresh machine downloads the Whisper `base` model
 See [CLAUDE.md](CLAUDE.md) for the full developer reference (running tests,
 architecture details) and [ONBOARDING.md](ONBOARDING.md) for a deeper
 architecture walkthrough.
+
+## License
+
+Transcriber is released under the [MIT License](LICENSE).
+
+### Third-party components
+
+Transcriber is built on top of the following open-source projects (installed
+via `pip`/`npm`, not vendored in this repository):
+
+| Component | License |
+|---|---|
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [CTranslate2](https://github.com/OpenNMT/CTranslate2) | MIT |
+| [FastAPI](https://github.com/tiangolo/fastapi) | MIT |
+| [Starlette](https://github.com/encode/starlette) / [Uvicorn](https://github.com/encode/uvicorn) / [websockets](https://github.com/python-websockets/websockets) / [httpx](https://github.com/encode/httpx) | BSD-3-Clause |
+| [NumPy](https://github.com/numpy/numpy) | BSD-3-Clause |
+| [Requests](https://github.com/psf/requests) / [huggingface_hub](https://github.com/huggingface/huggingface_hub) / [tokenizers](https://github.com/huggingface/tokenizers) / [python-multipart](https://github.com/Kludex/python-multipart) | Apache-2.0 |
+| [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT |
+| [PyObjC](https://github.com/ronaldoussoren/pyobjc) | MIT |
+| [pywebview](https://github.com/r0x0r/pywebview) | BSD-3-Clause |
+| [sounddevice](https://github.com/spatialaudio/python-sounddevice) | MIT |
+| [certifi](https://github.com/certifi/python-certifi) | MPL-2.0 |
+| [Vitest](https://github.com/vitest-dev/vitest) (dev/test only) | MIT |
+
+All of the above are permissive licenses — none require Transcriber's own
+source to be released under any particular license, and none are vendored or
+redistributed within this repository (they're fetched from PyPI/npm by
+`pip`/`npm` at install time).
+
+`Transcriber.spec`/`make_app.sh` use [PyInstaller](https://github.com/pyinstaller/pyinstaller)
+as a **build-only tool** (GPLv2-or-later) to produce the signed macOS app; it
+is never imported or distributed as part of the running application. PyInstaller's
+license includes an explicit exception permitting it to build and distribute
+software under any license, including this one.
+
+The Whisper speech-recognition model (downloaded automatically on first run
+to `~/.cache/huggingface/`, not included in this repository) is a separate,
+MIT-licensed model published by OpenAI / SYSTRAN, retrieved directly from
+Hugging Face under its own terms.

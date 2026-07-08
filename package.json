@@ -14,8 +14,8 @@
     "url": "git+https://github.com/lucashendrichCTO/Transcriber.git"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Lucas Hendrich",
+  "license": "MIT",
   "type": "module",
   "bugs": {
     "url": "https://github.com/lucashendrichCTO/Transcriber/issues"
