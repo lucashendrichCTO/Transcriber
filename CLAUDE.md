@@ -110,6 +110,30 @@ gutting every other ~256ms of audio. A `MAX_BACKLOG` bound (2s) drops the
 oldest excess from a fast stream so clock drift between the two independent
 PortAudio streams can't grow unbounded.
 
+**Stalled-stream watchdog.** Summing requires every configured stream to keep
+advancing (`ready = min(accumulator sizes)`); a stream that stops producing
+callbacks entirely — e.g. a Bluetooth mic (AirPods/Beats) that never completes
+its HFP handshake, or a misbehaving device — would otherwise block the mix
+forever, since `ready` stays pinned at that stream's stalled size. This was a
+real regression: selecting BlackHole + a flaky Bluetooth mic produced total
+silence even though BlackHole was capturing fine. The fix: a watchdog in
+`_python_capture()`'s poll loop checks `last_progress[i]` per stream, and if
+one stream has produced nothing for 1.5s while another is actively delivering
+audio, it's added to a `dead` set and excluded from the `min()` calculation —
+the healthy stream(s) then flow through unblocked. This sends a non-fatal
+`{"type": "warning"}` WebSocket message (see below), never `"error"`.
+
+**Warning vs. error messages.** `{"type": "error"}` is reserved for conditions
+that actually end the session (the frontend's `onmessage` handler calls
+`resetUI()` on it, disabling Stop & Save). Diagnostic conditions that don't
+stop capture — the stalled-stream watchdog above, and the one-shot "no sound
+detected in the first 5s" check — use `{"type": "warning"}` instead, which the
+frontend shows as a transient status message without touching button state.
+An earlier version sent the silence diagnostic as `"error"` with a message
+hardcoded to blame "microphone" permissions even when no microphone was
+selected at all (meeting-audio-only recording); that both showed a misleading
+message and disabled Stop & Save for a condition that wasn't fatal.
+
 ### macOS microphone permission (TCC) — why the app must be a real bundle
 
 macOS binds microphone (and BlackHole/CoreAudio input) permission to **code

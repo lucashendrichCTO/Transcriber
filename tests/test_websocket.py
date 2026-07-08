@@ -328,6 +328,105 @@ def test_python_start_produces_audio_from_callback(client, tmp_path, monkeypatch
     assert msg["type"] == "saved"
 
 
+def test_python_capture_drops_stalled_stream_instead_of_blocking(client, tmp_path, monkeypatch):
+    """Regression test: if one stream (e.g. a flaky Bluetooth mic) never produces
+    a callback while the other (e.g. BlackHole) is actively delivering audio, the
+    healthy stream must not be blocked forever. Before the fix, mixing required
+    ALL configured streams to advance (min() over accumulator sizes), so a single
+    dead stream meant total silence even though the other device worked fine."""
+    import sys, types, time, numpy as np, app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    callbacks: list = []
+
+    class _CallbackCapture:
+        def __init__(self, **kwargs):
+            callbacks.append(kwargs.get("callback"))
+        def start(self): pass
+        def stop(self): pass
+        def close(self): pass
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.InputStream = _CallbackCapture
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "config", "save_wav": False}))
+        ws.send_text(json.dumps({"type": "start", "meeting_device": "0", "mic_device": "1"}))
+        time.sleep(0.3)
+        assert len(callbacks) == 2  # meeting=callbacks[0], mic=callbacks[1]
+
+        # Only the meeting-audio stream ever fires; the mic stream is stalled.
+        audio = np.ones((4096, 1), dtype=np.float32) * 0.1
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            callbacks[0](audio, 4096, None, None)
+            time.sleep(0.1)
+
+        ws.send_text("SAVE")
+        messages = []
+        while True:
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    assert not any(m["type"] == "error" for m in messages)
+    warnings = [m for m in messages if m["type"] == "warning"]
+    assert warnings, "expected a non-fatal warning about the stalled microphone stream"
+    assert "microphone" in warnings[0]["text"]
+    # The meeting-audio stream's data must have reached pending_pcm despite the
+    # stalled mic stream — i.e. actual (non-empty-buffer) capture happened.
+    assert messages[-1]["type"] == "saved"
+
+
+def test_python_capture_silence_sends_warning_not_error(client, tmp_path, monkeypatch):
+    """Regression test: the 'no audio yet' diagnostic must be a non-fatal warning,
+    never an 'error' — an 'error' message makes the frontend disable Stop & Save,
+    effectively ending the session even though capture is still running fine."""
+    import sys, types, time, numpy as np, app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    callbacks: list = []
+
+    class _CallbackCapture:
+        def __init__(self, **kwargs):
+            callbacks.append(kwargs.get("callback"))
+        def start(self): pass
+        def stop(self): pass
+        def close(self): pass
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.InputStream = _CallbackCapture
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "config", "save_wav": False}))
+        # Single stream (meeting-audio only, no mic) — mirrors "record a webinar,
+        # I'm not speaking" usage where mic_device is intentionally empty.
+        ws.send_text(json.dumps({"type": "start", "meeting_device": "0", "mic_device": ""}))
+        time.sleep(0.3)
+        assert len(callbacks) == 1
+
+        silence = np.zeros((4096, 1), dtype=np.float32)
+        deadline = time.time() + 5.5
+        while time.time() < deadline:
+            callbacks[0](silence, 4096, None, None)
+            time.sleep(0.1)
+
+        ws.send_text("SAVE")
+        messages = []
+        while True:
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    assert not any(m["type"] == "error" for m in messages)
+    assert any(m["type"] == "warning" for m in messages)
+    assert messages[-1]["type"] == "saved"
+
+
 def test_python_start_cancel_resets_session(client, tmp_path, monkeypatch):
     """CANCEL after start should return 'cancelled' and clear the session."""
     import sys, types, app as app_module
