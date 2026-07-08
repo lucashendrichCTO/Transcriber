@@ -73,6 +73,64 @@ def test_list_input_devices_entries_well_formed():
         assert isinstance(d["label"], str) and d["label"]
 
 
+def test_list_input_devices_id_is_name_not_index():
+    """deviceId must be the device's NAME, not its numeric PortAudio index —
+    regression test for the bug where a cached index went stale the moment a
+    Bluetooth device connected/disconnected and renumbered every device after
+    it, silently opening the wrong device on Start."""
+    for d in list_input_devices():
+        assert d["deviceId"] == d["label"]
+        assert not d["deviceId"].isdigit()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_device_index — name-based lookup survives index drift
+# ---------------------------------------------------------------------------
+
+def _fake_query_devices(order):
+    return [{"name": name, "max_input_channels": 1} for name in order]
+
+
+def test_resolve_device_index_finds_current_position(monkeypatch):
+    import sys, types
+    from audio import _resolve_device_index
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.query_devices = lambda: _fake_query_devices(["Beats", "BlackHole 2ch", "MacBook Pro Microphone"])
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    assert _resolve_device_index("BlackHole 2ch") == 1
+
+
+def test_resolve_device_index_survives_index_drift(monkeypatch):
+    """The exact regression: a device's index shifts (e.g. a Bluetooth device
+    disconnects and is removed from the list) between when it was listed and
+    when it's opened — resolution must follow the name, not a cached index."""
+    import sys, types
+    from audio import _resolve_device_index
+
+    fake_sd = types.ModuleType("sounddevice")
+    # "BlackHole 2ch" was at index 1 when originally listed...
+    fake_sd.query_devices = lambda: _fake_query_devices(["BlackHole 2ch", "MacBook Pro Microphone"])
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    # ...but a Bluetooth device disconnecting shifted it to index 0. Resolving
+    # by name must still find it correctly.
+    assert _resolve_device_index("BlackHole 2ch") == 0
+
+
+def test_resolve_device_index_raises_when_device_not_found(monkeypatch):
+    import sys, types
+    from audio import _resolve_device_index
+
+    fake_sd = types.ModuleType("sounddevice")
+    fake_sd.query_devices = lambda: _fake_query_devices(["MacBook Pro Microphone"])
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with pytest.raises(ValueError):
+        _resolve_device_index("BlackHole 2ch")
+
+
 # ---------------------------------------------------------------------------
 # Real capture — hardware-gated
 # ---------------------------------------------------------------------------

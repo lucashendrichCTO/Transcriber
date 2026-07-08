@@ -123,6 +123,20 @@ audio, it's added to a `dead` set and excluded from the `min()` calculation —
 the healthy stream(s) then flow through unblocked. This sends a non-fatal
 `{"type": "warning"}` WebSocket message (see below), never `"error"`.
 
+**Device identity: name, not index.** `GET /devices` (and `list_input_devices()`
+in `audio.py`) identify a device by its **name** (e.g. `"BlackHole 2ch"`), not
+its numeric PortAudio index. Indices from `sounddevice.query_devices()` are
+NOT stable — connecting or disconnecting a Bluetooth device (AirPods, Beats)
+re-numbers every subsequent device in the list. A UI dropdown populated with a
+cached index can silently point at the WRONG device by the time the user
+clicks Start if a Bluetooth device connected/disconnected in between — this
+was a real bug that made BlackHole capture fail intermittently and
+unpredictably, indistinguishable from a permissions problem because it opened
+successfully and produced digital silence from whatever device the stale
+index now pointed to. `open_input_stream()`'s `_resolve_device_index()`
+re-queries `sd.query_devices()` fresh and resolves by name at the moment the
+stream actually opens, immune to any drift since the dropdown was populated.
+
 **Warning vs. error messages.** `{"type": "error"}` is reserved for conditions
 that actually end the session (the frontend's `onmessage` handler calls
 `resetUI()` on it, disabling Stop & Save). Diagnostic conditions that don't
@@ -188,7 +202,7 @@ and appended before writing the final text file.
 | File | Purpose |
 |---|---|
 | `app.py` | FastAPI server — `/ws` WebSocket (chunked accumulate + overlap-stitched transcription, session reset), `/devices` endpoint, `_python_capture()` for desktop-mode sounddevice capture + two-stream mixing, WAV debug dump on SAVE (`save_wav` config flag). |
-| `audio.py` | Shared audio helpers for desktop mode — `float_to_pcm16()`, `list_input_devices()`, `open_input_stream()` (sounddevice/PortAudio). Kept separate so capture is unit- and hardware-testable. |
+| `audio.py` | Shared audio helpers for desktop mode — `float_to_pcm16()`, `list_input_devices()` (returns devices keyed by name, not index — see above), `open_input_stream()` (resolves a device name to its current index at open time), all via sounddevice/PortAudio. Kept separate so capture is unit- and hardware-testable. |
 | `main.py` | Desktop entry point — sets `TRANSCRIBER_DESKTOP=1` before importing `app`, starts uvicorn in a daemon thread, opens a pywebview window, guards against a second instance and against a multiprocessing self-relaunch (`freeze_support()`). PyInstaller's bundle entry. |
 | `transcriber.py` | faster-whisper wrapper — loads Whisper `base` model once (module-level cache), `transcribe_pcm()` converts Int16 PCM → float32, runs VAD-filtered transcription, applies `skip_secs` to drop overlap-duplicated segments. |
 | `Transcriber.spec` / `entitlements.plist` | PyInstaller build spec and codesign entitlements (audio-input + hardened-runtime exceptions for CPython). |
