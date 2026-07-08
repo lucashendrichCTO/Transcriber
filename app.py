@@ -34,6 +34,26 @@ STATIC_DIR = BASE_DIR / "static"
 # build (run.sh) captures via getUserMedia. main.py sets this before importing.
 DESKTOP_CAPTURE = os.environ.get("TRANSCRIBER_DESKTOP") == "1"
 
+# A double-clicked GUI app has no visible stdout, so plain print() vanishes —
+# main.py already learned this and writes its own messages to a log file.
+# app.py's capture diagnostics (stream open/callback/silence info) previously
+# only used print(), meaning every capture failure in the real packaged app
+# was completely invisible. Mirror main.py's log file so both interleave.
+_LOG_DIR = os.path.expanduser("~/Library/Logs/Transcriber")
+_LOG_PATH = os.path.join(_LOG_DIR, "desktop.log")
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+    if DESKTOP_CAPTURE:
+        try:
+            os.makedirs(_LOG_DIR, exist_ok=True)
+            with open(_LOG_PATH, "a") as f:
+                f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
+
+
 # 30-second chunks at 16 kHz / 16-bit mono = 960,000 bytes
 CHUNK_BYTES = 30 * 16000 * 2
 # 2-second overlap prepended to each chunk so Whisper has sentence context
@@ -71,7 +91,9 @@ async def index():
 @app.get("/devices")
 async def list_devices():
     """Return audio input devices via PortAudio (sounddevice)."""
-    return JSONResponse({"devices": list_input_devices()})
+    devices = list_input_devices()
+    log(f"[transcriber] /devices → {devices}")
+    return JSONResponse({"devices": devices})
 
 
 @app.websocket("/ws")
@@ -112,7 +134,7 @@ async def websocket_endpoint(ws: WebSocket):
                 new_overlap = bytes(pending_pcm[-OVERLAP_BYTES:])
                 pending_pcm = bytearray()
                 if VERBOSE:
-                    print(f"[transcriber] committing chunk ({len(to_transcribe)/32000:.0f}s)")
+                    log(f"[transcriber] committing chunk ({len(to_transcribe)/32000:.0f}s)")
                 text = await loop.run_in_executor(
                     None, transcribe_pcm, to_transcribe, 16000, skip_secs
                 )
@@ -129,7 +151,7 @@ async def websocket_endpoint(ws: WebSocket):
                 preview = " ".join(filter(None, completed_segments + [text]))
             await ws.send_json({"type": "transcript", "text": preview})
         except Exception as exc:
-            print(f"[transcriber] preview error: {exc}")
+            log(f"[transcriber] preview error: {exc}")
             await ws.send_json({"type": "error", "text": f"Preview failed: {exc}"})
         finally:
             previewing = False
@@ -216,22 +238,31 @@ async def websocket_endpoint(ws: WebSocket):
         streams: list = []
         try:
             for idx, dev in enumerate(devices):
+                log(f"[transcriber] opening stream idx={idx} role={roles[idx]!r} device={dev!r}")
                 streams.append(open_input_stream(dev, _make_cb(idx)))
             for s in streams:
                 s.start()
-            print(f"[transcriber] Python capture started — devices={devices} streams={len(streams)}")
+            log(f"[transcriber] Python capture started — devices={devices} roles={roles} streams={len(streams)}")
         except Exception as exc:
-            print(f"[transcriber] capture init error: {exc}")
+            log(f"[transcriber] capture init error: {exc}")
             await ws.send_json({"type": "error", "text": f"Audio capture failed: {exc}"})
             return
 
         start_time = loop.time()
         last_preview = start_time
+        last_heartbeat = start_time
         reported_silence = False
         try:
             while not _capture_stop.is_set():
                 await asyncio.sleep(0.1)
                 now = loop.time()
+
+                # Heartbeat for the first ~6s so a real run's log shows exactly
+                # what each stream produced, independent of whether any of the
+                # diagnostics below ever trigger.
+                if now - start_time <= 6.0 and now - last_heartbeat >= 1.0:
+                    log(f"[transcriber] heartbeat t={now - start_time:.1f}s received_samples={received_samples} pending_pcm_bytes={len(pending_pcm)}")
+                    last_heartbeat = now
 
                 # Watchdog: a stream that's produced nothing for 1.5s while another
                 # is actively delivering audio gets dropped from the mix so it can't
@@ -247,7 +278,7 @@ async def websocket_endpoint(ws: WebSocket):
                         )
                         if stalled and others_alive:
                             dead.add(i)
-                            print(f"[transcriber] WARNING: {roles[i]} produced no audio for 1.5s — dropping it from the mix")
+                            log(f"[transcriber] WARNING: {roles[i]} produced no audio for 1.5s — dropping it from the mix")
                             await ws.send_json({
                                 "type": "warning",
                                 "text": f"No audio detected from your {roles[i]} — continuing with the "
@@ -257,22 +288,39 @@ async def websocket_endpoint(ws: WebSocket):
                             })
                             _flush()  # drain whatever the surviving stream already buffered
 
-                # One-shot diagnostic ~5s in if EVERYTHING captured so far is
-                # silent (distinct from the per-stream watchdog above, which only
-                # fires when one stream is dead while another is alive). Sent as a
+                # One-shot diagnostic ~5s in, keyed on WALL-CLOCK time (not on
+                # emitted_bytes) so it still fires even if literally zero bytes
+                # have ever been emitted — e.g. a single device (no mic) that
+                # opens successfully but never produces a callback at all. That
+                # case previously had NO diagnostic whatsoever: the old check
+                # required emitted_bytes to cross a threshold, which never
+                # happens if nothing is captured, so total silence with a
+                # single device silently produced no feedback at all. Sent as a
                 # non-fatal warning — it must never stop or block capture.
-                if not reported_silence and stats["emitted_bytes"] >= 5 * 16000 * 2:
+                if not reported_silence and now - start_time >= 5.0:
                     reported_silence = True
-                    tail = np.frombuffer(bytes(pending_pcm[-16000 * 2:]), dtype=np.int16).astype(np.float32) / 32768.0
-                    peak = float(np.max(np.abs(tail))) if tail.size else 0.0
-                    print(f"[transcriber] capture peak (5s check): {peak:.5f}")
-                    if peak < 0.001:
-                        print("[transcriber] NOTE: captured audio is silent so far")
+                    total_received = sum(received_samples)
+                    log(f"[transcriber] 5s check — received_samples={received_samples} pending_pcm_bytes={len(pending_pcm)}")
+                    if total_received == 0:
+                        log("[transcriber] WARNING: zero samples received from any configured stream after 5s")
                         await ws.send_json({
                             "type": "warning",
-                            "text": "No sound detected yet. If recording meeting audio, make sure something "
-                                    "is actually playing through your loopback device. Recording continues.",
+                            "text": "No audio has been received at all after 5 seconds. This usually means "
+                                    "macOS is silently blocking audio-input access for Transcriber even though "
+                                    "it looks enabled. Try: System Settings → Privacy & Security → Microphone → "
+                                    "toggle Transcriber off, back on, then restart the app. Recording continues.",
                         })
+                    else:
+                        tail = np.frombuffer(bytes(pending_pcm[-16000 * 2:]), dtype=np.int16).astype(np.float32) / 32768.0
+                        peak = float(np.max(np.abs(tail))) if tail.size else 0.0
+                        log(f"[transcriber] capture peak (5s check): {peak:.5f}")
+                        if peak < 0.001:
+                            log("[transcriber] NOTE: captured audio is silent so far")
+                            await ws.send_json({
+                                "type": "warning",
+                                "text": "No sound detected yet. If recording meeting audio, make sure something "
+                                        "is actually playing through your loopback device. Recording continues.",
+                            })
 
                 if now - last_preview >= 3.0 and not previewing and pending_pcm:
                     asyncio.create_task(_run_preview())
@@ -280,7 +328,7 @@ async def websocket_endpoint(ws: WebSocket):
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            print(f"[transcriber] capture loop error: {exc}")
+            log(f"[transcriber] capture loop error: {exc}")
         finally:
             for s in streams:
                 try:
@@ -288,7 +336,7 @@ async def websocket_endpoint(ws: WebSocket):
                     s.close()
                 except Exception:
                     pass
-            print(f"[transcriber] capture stopped — {stats['emitted_bytes']} bytes emitted")
+            log(f"[transcriber] capture stopped — {stats['emitted_bytes']} bytes emitted")
 
     async def _stop_capture():
         nonlocal _capture_task
@@ -318,7 +366,7 @@ async def websocket_endpoint(ws: WebSocket):
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
                     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
                     label = "near-silent" if peak < 0.001 else f"peak={peak:.4f}"
-                    print(f"[transcriber] received {len(data)} bytes — {label}")
+                    log(f"[transcriber] received {len(data)} bytes — {label}")
 
                 if not previewing:
                     asyncio.create_task(_run_preview())
@@ -331,10 +379,10 @@ async def websocket_endpoint(ws: WebSocket):
                         cfg = json.loads(cmd)
                         if cfg.get("type") == "config":
                             save_wav = bool(cfg.get("save_wav", False))
-                            if VERBOSE:
-                                print(f"[transcriber] config: save_wav={save_wav}")
+                            log(f"[transcriber] config: save_wav={save_wav}")
                         elif cfg.get("type") == "start":
                             # Desktop / pywebview mode: capture audio in Python
+                            log(f"[transcriber] received start: meeting_device={cfg.get('meeting_device')!r} mic_device={cfg.get('mic_device')!r}")
                             await _stop_capture()
                             _capture_task = asyncio.create_task(
                                 _python_capture(
@@ -342,8 +390,6 @@ async def websocket_endpoint(ws: WebSocket):
                                     cfg.get("mic_device", ""),
                                 )
                             )
-                            if VERBOSE:
-                                print(f"[transcriber] Python capture started: meeting={cfg.get('meeting_device')!r}")
                     except Exception:
                         pass
 
@@ -357,9 +403,9 @@ async def websocket_endpoint(ws: WebSocket):
                         try:
                             _write_wav(bytes(full_pcm), wav_path)
                             if VERBOSE:
-                                print(f"[transcriber] WAV saved: {wav_path}  ({len(full_pcm)} bytes, ~{len(full_pcm)/32000:.1f}s)")
+                                log(f"[transcriber] WAV saved: {wav_path}  ({len(full_pcm)} bytes, ~{len(full_pcm)/32000:.1f}s)")
                         except Exception as exc:
-                            print(f"[transcriber] WAV write failed: {exc}")
+                            log(f"[transcriber] WAV write failed: {exc}")
 
                     all_segments = list(completed_segments)
 
@@ -367,7 +413,7 @@ async def websocket_endpoint(ws: WebSocket):
                         to_transcribe = overlap_pcm + bytes(pending_pcm)
                         skip_secs = len(overlap_pcm) / 32000.0
                         if VERBOSE:
-                            print(f"[transcriber] SAVE: {len(pending_pcm)/32000:.0f}s tail + {len(completed_segments)} segments")
+                            log(f"[transcriber] SAVE: {len(pending_pcm)/32000:.0f}s tail + {len(completed_segments)} segments")
                         try:
                             loop = asyncio.get_running_loop()
                             tail_text = await loop.run_in_executor(
@@ -376,12 +422,12 @@ async def websocket_endpoint(ws: WebSocket):
                             if tail_text:
                                 all_segments.append(tail_text)
                         except Exception as exc:
-                            print(f"[transcriber] save tail error: {exc}")
+                            log(f"[transcriber] save tail error: {exc}")
                             await ws.send_json({"type": "error", "text": f"Save failed: {exc}"})
                             _reset_session()
                             continue
                     elif VERBOSE:
-                        print(f"[transcriber] SAVE: {len(completed_segments)} segments, no pending tail")
+                        log(f"[transcriber] SAVE: {len(completed_segments)} segments, no pending tail")
 
                     final_text = " ".join(all_segments)
                     save_path = SAVE_DIR / f"transcript_{timestamp}.txt"
@@ -401,6 +447,6 @@ async def websocket_endpoint(ws: WebSocket):
     except (WebSocketDisconnect, RuntimeError):
         pass
     except Exception as exc:
-        print(f"[transcriber] websocket handler error: {exc}")
+        log(f"[transcriber] websocket handler error: {exc}")
     finally:
         await _stop_capture()

@@ -119,6 +119,47 @@ even though capture was still running server-side. See
 and `::test_python_capture_silence_sends_warning_not_error` for the regression
 tests covering both fixes.
 
+## Device identity: name, not numeric index
+
+A third, independent bug hid alongside the two above and was arguably the
+bigger one: `GET /devices` used to identify each input device by its
+**numeric index** into `sounddevice.query_devices()` (`str(i)` in a simple
+`enumerate()` loop). That index is **not stable** — connecting or
+disconnecting a Bluetooth device (AirPods, Beats) shifts every device after it
+in the list, permanently, for as long as it stays disconnected. The desktop
+UI fetches `/devices` once to populate its dropdowns, then sends back whatever
+`deviceId` the user picked when Start is clicked — if a Bluetooth device
+connected or disconnected in the time between those two events (extremely
+common on a laptop — earbuds idling out, auto-switching, etc.), the cached
+index now points at a **different device entirely**. `sd.InputStream()` opens
+successfully (no exception, since the index that's now there is still valid)
+and produces real digital silence from whatever that device happens to be —
+which is indistinguishable, from the outside, from a genuine TCC/permissions
+problem or an empty BlackHole feed. This is why the bug looked so confusing:
+every diagnostic said "silence," but the actual selected-vs-opened device had
+already diverged before capture even started.
+
+The fix: `list_input_devices()` now returns each device's **name** (e.g.
+`"BlackHole 2ch"`) as `deviceId`, and `open_input_stream()`'s
+`_resolve_device_index()` re-queries `sd.query_devices()` fresh and resolves
+the name to whatever its *current* index is at the moment the stream actually
+opens — immune to any drift that happened between listing and starting. If
+the named device can no longer be found at all (unplugged/removed, not just
+renumbered), it raises rather than silently falling back to the system
+default, so the failure is visible instead of quietly capturing the wrong
+source.
+
+This class of bug is also why `app.py` now writes every `[transcriber]`
+diagnostic line to `~/Library/Logs/Transcriber/desktop.log` via a small `log()`
+helper (mirroring the one `main.py` already had for its own messages) instead
+of bare `print()` — a double-clicked GUI app has no visible stdout, so before
+this fix, every one of these capture diagnostics (stream open, per-device
+sample counts, the 5s/1.5s silence and stalled-stream checks) was completely
+invisible when running the actual packaged `.app`, making this whole class of
+bug very hard to diagnose from bug reports alone. Check that log file first
+when troubleshooting any "capture isn't working" report — it now shows
+exactly which device names were opened and how many samples each one produced.
+
 ## Chunked transcription with overlap stitching
 
 `transcriber.py` wraps `faster-whisper`. `app.py` doesn't transcribe once at

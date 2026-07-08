@@ -27,17 +27,27 @@ def float_to_pcm16(samples: np.ndarray) -> bytes:
 
 
 def list_input_devices() -> list[dict]:
-    """Return audio input devices as [{deviceId, label, kind}], or [] on failure."""
+    """Return audio input devices as [{deviceId, label, kind}], or [] on failure.
+
+    deviceId is the device's NAME, not its numeric PortAudio index. Indices are
+    NOT stable — a Bluetooth device (AirPods, Beats, etc.) connecting or
+    disconnecting re-numbers every subsequent device in sd.query_devices().
+    Caching an index from when this list was fetched (e.g. in a browser
+    dropdown) and using it later to open a stream can silently open the WRONG
+    device once the index has drifted — a real bug that made BlackHole capture
+    fail intermittently. Opening by name and re-resolving the current index at
+    open time (see open_input_stream/_resolve_device_index) avoids that.
+    """
     try:
         import sounddevice as sd
     except Exception:
         return []
     try:
         devices = []
-        for i, d in enumerate(sd.query_devices()):
+        for d in sd.query_devices():
             if d["max_input_channels"] > 0:
                 devices.append({
-                    "deviceId": str(i),
+                    "deviceId": d["name"],
                     "label": d["name"],
                     "kind": "audioinput",
                 })
@@ -46,15 +56,43 @@ def list_input_devices() -> list[dict]:
         return []
 
 
-def open_input_stream(device, callback, blocksize: int = 4096):
-    """Open (but do not start) a 16 kHz mono float32 InputStream.
+def _resolve_device_index(name: str):
+    """Look up the CURRENT PortAudio index for an input device by name.
 
-    `callback` receives (indata, frames, time_info, status) on the audio thread.
-    Raises if sounddevice is unavailable or the device cannot be opened.
+    Re-queries sd.query_devices() fresh (rather than trusting a cached index)
+    so a device that has shifted position since it was listed is still found
+    correctly. Falls back to treating `name` as a raw index for callers still
+    passing a numeric string (also keeps unit tests that mock sounddevice
+    without query_devices() working, since that lookup then just no-ops).
     """
     import sounddevice as sd
 
-    dev = int(device) if device not in (None, "") else None
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        devices = []
+    for i, d in enumerate(devices):
+        if d.get("name") == name and d.get("max_input_channels", 0) > 0:
+            return i
+    try:
+        return int(name)
+    except (TypeError, ValueError):
+        raise ValueError(f"input device {name!r} not found")
+
+
+def open_input_stream(device, callback, blocksize: int = 4096):
+    """Open (but do not start) a 16 kHz mono float32 InputStream.
+
+    `device` is a device NAME as returned by list_input_devices (resolved to
+    its current numeric index here, not a cached one — see
+    _resolve_device_index for why). `callback` receives
+    (indata, frames, time_info, status) on the audio thread. Raises if
+    sounddevice is unavailable, the named device can't be found, or the
+    device cannot be opened.
+    """
+    import sounddevice as sd
+
+    dev = _resolve_device_index(device) if device not in (None, "") else None
     return sd.InputStream(
         device=dev,
         channels=1,
