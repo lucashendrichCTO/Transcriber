@@ -5,7 +5,6 @@ The Whisper model is loaded once per test session via a session-scoped fixture
 to avoid the ~2s startup cost on every test.
 """
 import math
-import struct
 
 import numpy as np
 import pytest

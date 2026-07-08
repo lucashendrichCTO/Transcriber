@@ -6,18 +6,13 @@ The Whisper model is loaded once per session; PCM sent in tests is silence so
 transcription returns "" quickly without hallucination.
 """
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 from starlette.testclient import TestClient
 
-# Force DEBUG_WAV off by default so tests don't write WAV files unless explicitly
-# testing that behaviour.  Must be set before importing app.
-os.environ.setdefault("DEBUG_WAV", "0")
-
-from app import app  # noqa: E402  (import after env setup)
+from app import app
 
 
 @pytest.fixture(scope="session")
@@ -43,7 +38,7 @@ def _recv_json(ws) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_websocket_connects(client):
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect("/ws"):
         pass  # clean connect + disconnect should not raise
 
 
@@ -295,7 +290,7 @@ def test_python_start_then_save_returns_saved(client, tmp_path, monkeypatch):
 
 def test_python_start_produces_audio_from_callback(client, tmp_path, monkeypatch):
     """When the InputStream callback fires with PCM data it reaches pending_pcm."""
-    import sys, types, threading, time, numpy as np, app as app_module
+    import sys, types, time, app as app_module
     monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
 
     callbacks: list = []
@@ -334,7 +329,7 @@ def test_python_capture_drops_stalled_stream_instead_of_blocking(client, tmp_pat
     healthy stream must not be blocked forever. Before the fix, mixing required
     ALL configured streams to advance (min() over accumulator sizes), so a single
     dead stream meant total silence even though the other device worked fine."""
-    import sys, types, time, numpy as np, app as app_module
+    import sys, types, time, app as app_module
     monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
 
     callbacks: list = []
@@ -384,7 +379,7 @@ def test_python_capture_silence_sends_warning_not_error(client, tmp_path, monkey
     """Regression test: the 'no audio yet' diagnostic must be a non-fatal warning,
     never an 'error' — an 'error' message makes the frontend disable Stop & Save,
     effectively ending the session even though capture is still running fine."""
-    import sys, types, time, numpy as np, app as app_module
+    import sys, types, time, app as app_module
     monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
 
     callbacks: list = []

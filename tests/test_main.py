@@ -9,8 +9,6 @@ import socket
 import threading
 import time
 
-import pytest
-
 from main import _wait_for_port, _start_server, PORT
 
 
