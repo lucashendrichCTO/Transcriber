@@ -153,6 +153,16 @@
           setTranscript(msg.text);
           showSaveNotice(msg.path);
           resetUI();
+        } else if (msg.type === "warning") {
+          // Non-fatal diagnostic (e.g. one audio source looks silent) — capture
+          // keeps running; don't touch button state or stop the session.
+          console.warn("[transcriber]", msg.text);
+          if (statusDot.className === "recording") {
+            setStatus("recording", msg.text);
+            setTimeout(() => {
+              if (statusDot.className === "recording") setStatus("recording", "Recording…");
+            }, 6000);
+          }
         } else if (msg.type === "error") {
           setStatus("", `Error: ${msg.text}`);
           resetUI();

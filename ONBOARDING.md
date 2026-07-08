@@ -96,6 +96,29 @@ source. A small `MAX_BACKLOG` (2s) bound drops excess from whichever stream is
 running ahead, so clock drift between the two independent PortAudio streams
 can't grow unbounded over a long recording.
 
+**A second, more serious regression followed from the "summed once both have
+buffered" design**: it requires *every* configured stream to keep advancing,
+since the emitted span is `min()` of the accumulator sizes. If one stream
+stalls completely — e.g. a Bluetooth mic (AirPods/Beats) that never finishes
+its HFP handshake, so it opens successfully but never actually calls back —
+the healthy stream's audio piles up behind it and `min()` stays at 0 forever:
+total silence, even though (say) BlackHole was capturing the meeting audio
+just fine. The fix is a watchdog in the capture poll loop: each stream tracks
+`last_progress[i]` (event-loop time of its last callback), and if one hasn't
+advanced for 1.5s while another stream *has* produced audio, it's excluded
+from the `min()` going forward so the healthy stream isn't blocked. This is
+reported to the client as a non-fatal `{"type": "warning"}` message — critically
+*not* `{"type": "error"}`, which the frontend treats as session-ending (it
+calls `resetUI()`, disabling Stop & Save). An earlier version conflated "audio
+looks silent so far" with a hard error and hardcoded a "grant microphone
+access" message even when recording meeting-audio-only (no mic selected at
+all) — meaning a single false-positive silence check could both show a
+misleading message and strand the user with no way to stop/save the session,
+even though capture was still running server-side. See
+`tests/test_websocket.py::test_python_capture_drops_stalled_stream_instead_of_blocking`
+and `::test_python_capture_silence_sends_warning_not_error` for the regression
+tests covering both fixes.
+
 ## Chunked transcription with overlap stitching
 
 `transcriber.py` wraps `faster-whisper`. `app.py` doesn't transcribe once at

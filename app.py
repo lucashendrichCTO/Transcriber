@@ -146,8 +146,17 @@ async def websocket_endpoint(ws: WebSocket):
         other source). When the second source is silent that reads as 256 ms of
         audio / 256 ms of silence, and Whisper mangles the chopped words.
 
+        Summing requires ALL configured streams to keep advancing — if one stalls
+        completely (e.g. a Bluetooth mic that never finishes its HFP handshake, or
+        a wrong/disconnected device), the other stream's audio piles up behind it
+        and nothing is ever emitted, i.e. total silence even though one source is
+        working fine. A watchdog below detects a stream that's produced nothing
+        for 1.5s while another is actively delivering audio and drops it from the
+        mix so the healthy stream isn't blocked forever.
+
         Per-stream float32 accumulators are mutated only on the event-loop thread
-        (callbacks marshal frames via call_soon_threadsafe), so no locks are needed.
+        (callbacks marshal frames via call_soon_threadsafe, and the watchdog runs
+        on the event loop too), so no locks are needed.
         """
         loop = asyncio.get_running_loop()
         _capture_stop.clear()
@@ -155,27 +164,32 @@ async def websocket_endpoint(ws: WebSocket):
         # Distinct input streams to capture. Dedupe so selecting the same device
         # for both "meeting" and "mic" doesn't double it.
         devices: list[str] = [meeting_device]
+        roles: list[str] = ["meeting audio"]
         if mic_device and mic_device != meeting_device:
             devices.append(mic_device)
+            roles.append("microphone")
 
         accums: list[np.ndarray] = [np.zeros(0, dtype=np.float32) for _ in devices]
+        received_samples: list[int] = [0 for _ in devices]
+        last_progress: list[float] = [loop.time() for _ in devices]
+        dead: set[int] = set()
         # Bound clock drift between independent streams: never let one buffer get
         # more than ~2 s ahead of the slowest one (drop the oldest excess instead).
         MAX_BACKLOG = 2 * 16000
         stats = {"emitted_bytes": 0}
 
-        def _ingest(idx: int, mono: np.ndarray) -> None:
-            accums[idx] = np.concatenate((accums[idx], mono))
-            if accums[idx].size > MAX_BACKLOG:
-                accums[idx] = accums[idx][-MAX_BACKLOG:]
-            # Emit only the span all streams have in common, summed (mixed).
-            ready = min(a.size for a in accums)
+        def _flush() -> None:
+            """Mix and emit the span common to all currently-live streams."""
+            live = [i for i in range(len(accums)) if i not in dead]
+            if not live:
+                return
+            ready = min(accums[i].size for i in live)
             if ready <= 0:
                 return
-            mixed = accums[0][:ready].astype(np.float32, copy=True)
-            for a in accums[1:]:
-                mixed += a[:ready]
-            for i in range(len(accums)):
+            mixed = accums[live[0]][:ready].astype(np.float32, copy=True)
+            for i in live[1:]:
+                mixed += accums[i][:ready]
+            for i in live:
                 accums[i] = accums[i][ready:]
             np.clip(mixed, -1.0, 1.0, out=mixed)
             pcm = (mixed * 32767.0).astype("<i2").tobytes()
@@ -183,6 +197,14 @@ async def websocket_endpoint(ws: WebSocket):
             if save_wav:
                 full_pcm.extend(pcm)
             stats["emitted_bytes"] += len(pcm)
+
+        def _ingest(idx: int, mono: np.ndarray) -> None:
+            accums[idx] = np.concatenate((accums[idx], mono))
+            received_samples[idx] += mono.size
+            last_progress[idx] = loop.time()
+            if accums[idx].size > MAX_BACKLOG:
+                accums[idx] = accums[idx][-MAX_BACKLOG:]
+            _flush()
 
         def _make_cb(idx: int):
             def _cb(indata, frames, time_info, status):
@@ -203,23 +225,55 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.send_json({"type": "error", "text": f"Audio capture failed: {exc}"})
             return
 
-        last_preview = loop.time()
+        start_time = loop.time()
+        last_preview = start_time
         reported_silence = False
         try:
             while not _capture_stop.is_set():
                 await asyncio.sleep(0.1)
+                now = loop.time()
 
-                # Warn once if audio looks silent after ~5s of captured audio.
+                # Watchdog: a stream that's produced nothing for 1.5s while another
+                # is actively delivering audio gets dropped from the mix so it can't
+                # block the healthy stream forever (see docstring above). This is a
+                # non-fatal warning — capture continues uninterrupted either way.
+                if len(devices) > 1:
+                    for i in range(len(devices)):
+                        if i in dead:
+                            continue
+                        stalled = now - last_progress[i] > 1.5
+                        others_alive = any(
+                            received_samples[j] > 0 for j in range(len(devices)) if j != i
+                        )
+                        if stalled and others_alive:
+                            dead.add(i)
+                            print(f"[transcriber] WARNING: {roles[i]} produced no audio for 1.5s — dropping it from the mix")
+                            await ws.send_json({
+                                "type": "warning",
+                                "text": f"No audio detected from your {roles[i]} — continuing with the "
+                                        f"other source only. Check that the right device is selected and, "
+                                        f"for a microphone, that it isn't muted and has access in System "
+                                        f"Settings → Privacy & Security → Microphone.",
+                            })
+                            _flush()  # drain whatever the surviving stream already buffered
+
+                # One-shot diagnostic ~5s in if EVERYTHING captured so far is
+                # silent (distinct from the per-stream watchdog above, which only
+                # fires when one stream is dead while another is alive). Sent as a
+                # non-fatal warning — it must never stop or block capture.
                 if not reported_silence and stats["emitted_bytes"] >= 5 * 16000 * 2:
+                    reported_silence = True
                     tail = np.frombuffer(bytes(pending_pcm[-16000 * 2:]), dtype=np.int16).astype(np.float32) / 32768.0
                     peak = float(np.max(np.abs(tail))) if tail.size else 0.0
                     print(f"[transcriber] capture peak (5s check): {peak:.5f}")
                     if peak < 0.001:
-                        print("[transcriber] WARNING: audio is silent — check mic permission in System Settings → Privacy & Security → Microphone")
-                        await ws.send_json({"type": "error", "text": "Audio is silent — grant microphone access to Transcriber in System Settings → Privacy & Security → Microphone, then restart."})
-                    reported_silence = True
+                        print("[transcriber] NOTE: captured audio is silent so far")
+                        await ws.send_json({
+                            "type": "warning",
+                            "text": "No sound detected yet. If recording meeting audio, make sure something "
+                                    "is actually playing through your loopback device. Recording continues.",
+                        })
 
-                now = loop.time()
                 if now - last_preview >= 3.0 and not previewing and pending_pcm:
                     asyncio.create_task(_run_preview())
                     last_preview = now
