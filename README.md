@@ -11,7 +11,8 @@ Two ways to use it:
 - **Any OS with Python and a browser** (Windows, Linux, or macOS without
   building the app): run the same server locally and use it in Chrome/Edge/
   Firefox (see [Running in a browser](#running-in-a-browser-windows-linux-macos)
-  below).
+  below). **Windows users: see [WINDOWS.md](WINDOWS.md) for a complete
+  step-by-step guide.**
 
 ## Requirements
 
@@ -25,6 +26,8 @@ Two ways to use it:
     the setup steps below, since installing it alone is not enough.
   - Windows: enable **Stereo Mix** in Sound settings, or install a virtual
     cable driver such as [VB-Audio Virtual Cable](https://vb-audio.com/Cable/)
+    — see [WINDOWS.md](WINDOWS.md#capturing-meeting-audio-optional) for
+    full steps
   Without one, Transcriber can still record your microphone — you just won't
   have a "meeting audio" device to pick from.
 
@@ -160,50 +163,10 @@ browser automatically.
 
 ### Windows (Chrome)
 
-1. Install [Python 3.9 or later](https://www.python.org/downloads/windows/)
-   if you don't already have it. During install, check **"Add python.exe to
-   PATH."**
-2. Download or clone this repository, then open **Command Prompt** or
-   **PowerShell** in the project folder.
-3. Create and activate a virtual environment:
-   ```powershell
-   py -3 -m venv .venv
-   .venv\Scripts\Activate.ps1
-   ```
-   (If PowerShell blocks the activation script with an execution-policy
-   error, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
-   first, then retry. In Command Prompt, use `.venv\Scripts\activate.bat`
-   instead of the `.ps1` script.)
-4. Install dependencies:
-   ```powershell
-   pip install -r requirements.txt
-   ```
-   (The macOS-only packages in `requirements.txt` — `pyobjc*`, `pywebview`,
-   `sounddevice` — are automatically skipped on Windows; you don't need to do
-   anything special for that.)
-5. Start the server:
-   ```powershell
-   python -m uvicorn app:app --host 127.0.0.1 --port 8765
-   ```
-6. Open **Chrome** and go to `http://localhost:8765`.
-7. Click **Start Recording**. Chrome will ask for microphone permission —
-   click **Allow**. If you want to transcribe meeting/call audio too, select
-   your loopback device (Stereo Mix or VB-Cable, see Requirements above) from
-   the "Meeting audio" dropdown before starting.
-8. Click **Stop & Save** when done. The transcript is written to
-   `%USERPROFILE%\Desktop\transcript_YYYY-MM-DD_HHMMSS.txt`.
-
-The first transcription on a fresh machine downloads the Whisper `base` model
-(~142 MB, one-time, cached under your user profile).
-
-**Windows troubleshooting:**
-- `python`/`py` not recognized — reinstall Python and make sure "Add to PATH"
-  was checked, or use the full path to `python.exe`.
-- Windows Defender Firewall may prompt to allow Python to accept connections
-  the first time you start the server — allow it (the server only listens on
-  `127.0.0.1`, not your network).
-- Port 8765 already in use: find and stop the process with
-  `netstat -ano | findstr :8765` followed by `taskkill /PID <pid> /F`.
+See **[WINDOWS.md](WINDOWS.md)** for a complete, beginner-friendly, step-by-step
+guide — downloading the code, installing Python, first-time setup, running
+Transcriber, and setting up meeting-audio capture (Stereo Mix / VB-Cable),
+with a dedicated troubleshooting section.
 
 See [CLAUDE.md](CLAUDE.md) for the full developer reference (running tests,
 architecture details) and [ONBOARDING.md](ONBOARDING.md) for a deeper
