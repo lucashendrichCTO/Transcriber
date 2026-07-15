@@ -3,6 +3,7 @@ llama-cpp-python==0.3.9
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
 numpy==2.0.2
+requests==2.32.5  # faster_whisper/utils.py imports this directly; not declared in its own package metadata
 
 # macOS desktop window — pyobjc must be pinned before pywebview so pip uses
 # pre-built cp39 universal2 wheels rather than attempting a source build.
