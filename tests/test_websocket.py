@@ -13,6 +13,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app import app
+from tests.conftest import silence_pcm as _silence_pcm
 
 
 @pytest.fixture(scope="session")
@@ -23,11 +24,6 @@ def client():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _silence_pcm(duration_s: float = 0.5, sample_rate: int = 16000) -> bytes:
-    n = int(duration_s * sample_rate)
-    return b"\x00\x00" * n
-
 
 def _recv_json(ws) -> dict:
     return json.loads(ws.receive_text())

@@ -183,7 +183,7 @@ via `pip`/`npm`, not vendored in this repository):
 | [FastAPI](https://github.com/tiangolo/fastapi) | MIT |
 | [Starlette](https://github.com/encode/starlette) / [Uvicorn](https://github.com/encode/uvicorn) / [websockets](https://github.com/python-websockets/websockets) / [httpx](https://github.com/encode/httpx) | BSD-3-Clause |
 | [NumPy](https://github.com/numpy/numpy) | BSD-3-Clause |
-| [Requests](https://github.com/psf/requests) / [huggingface_hub](https://github.com/huggingface/huggingface_hub) / [tokenizers](https://github.com/huggingface/tokenizers) | Apache-2.0 |
+| [huggingface_hub](https://github.com/huggingface/huggingface_hub) / [tokenizers](https://github.com/huggingface/tokenizers) | Apache-2.0 |
 | [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT |
 | [PyObjC](https://github.com/ronaldoussoren/pyobjc) | MIT |
 | [pywebview](https://github.com/r0x0r/pywebview) | BSD-3-Clause |

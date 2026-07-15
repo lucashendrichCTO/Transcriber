@@ -6,10 +6,10 @@ Tests the WAV-writing helper in isolation — no WebSocket or Whisper needed.
 import wave
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from app import _write_wav
+from tests.conftest import constant_pcm, silence_pcm
 
 
 @pytest.fixture
@@ -18,13 +18,12 @@ def tmp_wav(tmp_path) -> Path:
 
 
 def _pcm_bytes(n_samples: int = 16000) -> bytes:
-    """Return n_samples of 16-bit signed silence."""
-    return b"\x00\x00" * n_samples
+    """Return n_samples of 16-bit signed silence (16kHz assumed)."""
+    return silence_pcm(duration_s=n_samples / 16000, sample_rate=16000)
 
 
 def _pcm_bytes_nonzero(n_samples: int = 16000) -> bytes:
-    samples = (np.full(n_samples, 1000, dtype=np.int16))
-    return samples.tobytes()
+    return constant_pcm(1000, n_samples)
 
 
 # ---------------------------------------------------------------------------

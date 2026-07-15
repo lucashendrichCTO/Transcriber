@@ -2,7 +2,7 @@ faster-whisper==1.1.1
 llama-cpp-python==0.3.9
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
-requests
+numpy==2.0.2
 
 # macOS desktop window — pyobjc must be pinned before pywebview so pip uses
 # pre-built cp39 universal2 wheels rather than attempting a source build.
@@ -14,4 +14,4 @@ pyobjc-framework-Quartz==11.1;                sys_platform == "darwin"
 pyobjc-framework-UniformTypeIdentifiers==11.1; sys_platform == "darwin"
 pyobjc-framework-security==11.1;              sys_platform == "darwin"
 pywebview==6.2.1;                             sys_platform == "darwin"
-sounddevice;                                  sys_platform == "darwin"
+sounddevice==0.5.5;                           sys_platform == "darwin"

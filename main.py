@@ -18,6 +18,8 @@ import time
 
 import uvicorn
 
+from logutil import make_file_logger
+
 # NOTE: pywebview (`webview`) is imported lazily inside __main__, not here.
 # It's a darwin-only dependency, so a top-level import breaks `import main` on
 # Linux — which the CI test runner does to test the pure-logic helpers below.
@@ -69,19 +71,7 @@ BUNDLE_ID = (
 _DEFAULT_PORT = 8765 if APP_NAME == "Transcriber" else 8766
 PORT = int(os.environ.get("TRANSCRIBER_PORT", str(_DEFAULT_PORT)))
 
-_LOG_DIR = os.path.expanduser(f"~/Library/Logs/{APP_NAME}")
-_LOG_PATH = os.path.join(_LOG_DIR, "desktop.log")
-
-
-def log(msg: str) -> None:
-    """Append a timestamped line to the desktop log (GUI apps have no stdout)."""
-    try:
-        os.makedirs(_LOG_DIR, exist_ok=True)
-        with open(_LOG_PATH, "a") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-    except Exception:
-        pass
-    print(msg, flush=True)
+log = make_file_logger(APP_NAME)
 
 
 def _wait_for_port(port: int, timeout: float = 15.0) -> bool:

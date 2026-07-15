@@ -1,6 +1,9 @@
+import os
 from typing import Optional
 
 from llama_cpp import Llama
+
+from logutil import make_file_logger
 
 _model: Optional[Llama] = None
 
@@ -11,18 +14,27 @@ _FILENAME = "*Q4_K_M.gguf"
 # Keep each chunk comfortably inside the model's context window (n_ctx below).
 _CHUNK_CHARS = 12000
 
+# A double-clicked desktop app has no visible stdout, so plain print() here
+# would silently vanish — only wrap with the file logger in desktop mode
+# (browser mode has a real terminal, where plain print() is fine).
+_log = (
+    make_file_logger(os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber"))
+    if os.environ.get("TRANSCRIBER_DESKTOP") == "1"
+    else print
+)
+
 
 def get_model() -> Llama:
     global _model
     if _model is None:
-        print("Loading Phi-4-mini-instruct summarization model (downloads on first run)…")
+        _log("Loading Phi-4-mini-instruct summarization model (downloads on first run)…")
         _model = Llama.from_pretrained(
             repo_id=_REPO_ID,
             filename=_FILENAME,
             n_ctx=8192,
             verbose=False,
         )
-        print("Summarization model ready.")
+        _log("Summarization model ready.")
     return _model
 
 

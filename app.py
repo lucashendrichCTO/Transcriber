@@ -12,7 +12,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from audio import list_input_devices, open_input_stream
+from audio import float_to_pcm16, list_input_devices, open_input_stream
+from logutil import make_file_logger
 from summarizer import summarize_transcript
 from transcriber import transcribe_pcm
 
@@ -39,25 +40,18 @@ DESKTOP_CAPTURE = os.environ.get("TRANSCRIBER_DESKTOP") == "1"
 # main.py already learned this and writes its own messages to a log file.
 # app.py's capture diagnostics (stream open/callback/silence info) previously
 # only used print(), meaning every capture failure in the real packaged app
-# was completely invisible. Mirror main.py's log file so both interleave.
-#
-# Namespaced by TRANSCRIBER_APP_NAME (same as main.py) so a beta build's log
-# never mixes with production's — a shared log file was previously the only
-# thing tying two independently-running app copies together.
-_APP_NAME = os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber")
-_LOG_DIR = os.path.expanduser(f"~/Library/Logs/{_APP_NAME}")
-_LOG_PATH = os.path.join(_LOG_DIR, "desktop.log")
+# was completely invisible. Mirror main.py's log file (via the same shared
+# helper) so both interleave — only in desktop mode, since browser mode has a
+# real terminal. Namespaced by TRANSCRIBER_APP_NAME so a beta build's log
+# never mixes with production's.
+_write_log_file = make_file_logger(os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber"))
 
 
 def log(msg: str) -> None:
-    print(msg, flush=True)
     if DESKTOP_CAPTURE:
-        try:
-            os.makedirs(_LOG_DIR, exist_ok=True)
-            with open(_LOG_PATH, "a") as f:
-                f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-        except Exception:
-            pass
+        _write_log_file(msg)
+    else:
+        print(msg, flush=True)
 
 
 # 30-second chunks at 16 kHz / 16-bit mono = 960,000 bytes
@@ -215,8 +209,7 @@ async def websocket_endpoint(ws: WebSocket):
                 mixed += accums[i][:ready]
             for i in live:
                 accums[i] = accums[i][ready:]
-            np.clip(mixed, -1.0, 1.0, out=mixed)
-            pcm = (mixed * 32767.0).astype("<i2").tobytes()
+            pcm = float_to_pcm16(mixed)
             pending_pcm.extend(pcm)
             if save_wav:
                 full_pcm.extend(pcm)
@@ -392,8 +385,8 @@ async def websocket_endpoint(ws: WebSocket):
                                     cfg.get("mic_device", ""),
                                 )
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log(f"[transcriber] malformed control message ignored: {cmd!r} ({exc})")
 
                 elif cmd == "SAVE":
                     await _stop_capture()

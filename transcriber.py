@@ -1,17 +1,29 @@
+import os
 from typing import Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
 
+from logutil import make_file_logger
+
 _model: Optional[WhisperModel] = None
+
+# A double-clicked desktop app has no visible stdout, so plain print() here
+# would silently vanish — only wrap with the file logger in desktop mode
+# (browser mode has a real terminal, where plain print() is fine).
+_log = (
+    make_file_logger(os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber"))
+    if os.environ.get("TRANSCRIBER_DESKTOP") == "1"
+    else print
+)
 
 
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
-        print("Loading Whisper 'base' model (downloads ~142 MB on first run)…")
+        _log("Loading Whisper 'base' model (downloads ~142 MB on first run)…")
         _model = WhisperModel("base", device="cpu", compute_type="int8")
-        print("Whisper model ready.")
+        _log("Whisper model ready.")
     return _model
 
 
