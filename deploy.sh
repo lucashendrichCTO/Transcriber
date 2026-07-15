@@ -5,6 +5,9 @@
 #   ./deploy.sh               run tests, build, install, verify the bundle
 #   ./deploy.sh --test-only   run tests only, no build
 #   ./deploy.sh --build-only  skip pre-build tests; still verifies the bundle
+#   ./deploy.sh --beta        build/install as "Transcriber-beta", side by
+#                             side with the production Transcriber.app —
+#                             combine with the other flags as needed
 
 set -e
 cd "$(dirname "$0")"
@@ -16,6 +19,7 @@ for arg in "$@"; do
   case "$arg" in
     --test-only)  BUILD=0 ;;
     --build-only) TEST=0  ;;
+    --beta)       export TRANSCRIBER_APP_NAME="Transcriber-beta" ;;
   esac
 done
 

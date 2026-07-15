@@ -45,9 +45,10 @@ python -m pytest tests/test_websocket.py -v                # single file
 python -m pytest tests/test_websocket.py::test_websocket_connects -v  # single test
 ```
 
-Two marker-gated groups are skipped by default (see `pytest.ini`):
+Three marker-gated groups are skipped by default (see `pytest.ini`):
 - `hardware` (`tests/test_audio_capture.py`) — needs a real audio input device.
 - `bundle` (`tests/test_bundle.py`) — needs a built `Transcriber.app` (run `make_app.sh` first). `deploy.sh` runs these separately, post-build.
+- `summarization` (`tests/test_summarizer.py`) — exercises the real GGUF model instead of the mocked one used by the rest of the suite; opt in with `TRANSCRIBER_RUN_SUMMARIZATION_TESTS=1` since it downloads a multi-GB model on first run.
 
 CI (`.github/workflows/test.yml`) runs Python tests on Linux — darwin-only deps
 (`pyobjc*`, `pywebview`, `sounddevice`) are skipped there via platform markers in
@@ -72,7 +73,9 @@ Desktop mode (Transcriber.app, pywebview/WKWebView):        │
     └─► app.py's _python_capture() opens sounddevice        │
         InputStream(s) via audio.py, mixes samples, ────────┘
         feeds the same PCM accumulator
-                                  On SAVE: final tail transcription → ~/Desktop/transcript_*.txt
+                        On SAVE: final tail transcription, then summarizer.py
+                        (local GGUF model) summarizes the full transcript ─►
+                        ~/Desktop/transcript_*.txt (summary + transcript)
 ```
 
 **Capture-path selection.** The server sets `DESKTOP_CAPTURE` from the
@@ -229,6 +232,7 @@ and appended before writing the final text file.
 | `audio.py` | Shared audio helpers for desktop mode — `float_to_pcm16()`, `list_input_devices()` (returns devices keyed by name, not index — see above), `open_input_stream()` (resolves a device name to its current index at open time), all via sounddevice/PortAudio. Kept separate so capture is unit- and hardware-testable. |
 | `main.py` | Desktop entry point — sets `TRANSCRIBER_DESKTOP=1` before importing `app`, starts uvicorn in a daemon thread, opens a pywebview window, guards against a second instance and against a multiprocessing self-relaunch (`freeze_support()`). PyInstaller's bundle entry. |
 | `transcriber.py` | faster-whisper wrapper — loads Whisper `base` model once (module-level cache), `transcribe_pcm()` converts Int16 PCM → float32, runs VAD-filtered transcription, applies `skip_secs` to drop overlap-duplicated segments. |
+| `summarizer.py` | llama-cpp-python wrapper — loads a local Phi-4-mini-instruct GGUF model once (module-level cache, downloaded on first use like the Whisper model), `summarize_transcript()` builds a summary prompt and runs it, map-reduce chunking transcripts too long for one context window. |
 | `Transcriber.spec` / `entitlements.plist` | PyInstaller build spec and codesign entitlements (audio-input + hardened-runtime exceptions for CPython). |
 | `make_app.sh` / `deploy.sh` | Build the signed `.app` (PyInstaller) / full test→build→install→verify pipeline. |
 | `static/index.html` | Dark-mode UI — record/stop buttons, meeting/mic device selects, live transcript display. |
@@ -265,20 +269,40 @@ and appended before writing the final text file.
    desktop: `_python_capture()`'s loop). The server transcribes the accumulated
    buffer on each tick and, once a 30s chunk is complete, commits it with
    overlap stitching (see above) and sends a live transcript update.
-3. User clicks **Stop & Save** → any WebSocket/Python capture is stopped, the
-   remaining PCM tail is transcribed, appended to the committed segments, and
-   the joined text saved to `~/Desktop/transcript_YYYY-MM-DD_HHMMSS.txt`
+3. User clicks **Stop & Save Meeting** → any WebSocket/Python capture is
+   stopped, the remaining PCM tail is transcribed and appended to the
+   committed segments. If the joined transcript is non-empty, the server
+   sends a `{"type": "status"}` "Generating summary..." message and runs
+   `summarizer.summarize_transcript()` on it; the saved file is the summary
+   followed by the full transcript (`Summary:\n...\n\nTranscript:\n...`). If
+   summarization raises for any reason, that's logged and the file falls back
+   to the transcript alone — summarization can never block a save. Either
+   way the result is written to `~/Desktop/transcript_YYYY-MM-DD_HHMMSS_mmm.txt`
    (falls back to `~/` if no Desktop directory exists). If "save WAV" was
-   checked, the raw PCM is also dumped to a sibling `.wav` file.
+   checked, the raw PCM is also dumped to a sibling `.wav` file. The `"saved"`
+   WebSocket message's `text` field is always the plain transcript (not the
+   summary), so the live transcript display is unaffected by summarization.
 4. Session state (`pending_pcm`, `overlap_pcm`, `completed_segments`,
    `full_pcm`) is reset — no audio or text retained in memory after save.
 
 ## Environment
 
-No API keys required. Fully offline. Two optional env vars:
+No API keys required. Fully offline. Optional env vars:
 
 - `VERBOSE=1` — enables extra `[transcriber]` debug logging in `app.py` (peak
   amplitude on receipt, chunk-commit timing, capture start/stop).
 - `TRANSCRIBER_DESKTOP=1` — set internally by `main.py`; forces desktop
   (Python/sounddevice) capture mode. Not meant to be set manually for the
   browser path.
+- `TRANSCRIBER_APP_NAME` — overrides the app name used by `make_app.sh`,
+  `Transcriber.spec`, and `main.py` (bundle name, bundle identifier, install
+  path, log directory, WebView storage directory, window title, and the
+  self-reactivation bundle id all derive from it). Defaults to `Transcriber`.
+  Set to e.g. `Transcriber-beta` to build/install a test copy that coexists
+  with the production app instead of overwriting it — see `deploy.sh --beta`.
+- `TRANSCRIBER_PORT` — overrides the port used by `main.py` and `run.sh`
+  (default `8765`). Needed to run a second instance concurrently, since
+  `run.sh` kills whatever already holds its port on startup.
+- `TRANSCRIBER_RUN_SUMMARIZATION_TESTS=1` — opts in to
+  `tests/test_summarizer.py`'s real-model integration test (downloads the
+  summarization GGUF model; skipped by default, see Testing above).

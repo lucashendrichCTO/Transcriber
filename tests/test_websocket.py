@@ -123,6 +123,85 @@ def test_save_with_no_audio_still_saves(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Summarization on SAVE
+# ---------------------------------------------------------------------------
+# transcribe_pcm is monkeypatched to return fixed non-empty text so these tests
+# don't depend on Whisper actually transcribing anything meaningful, and so
+# they exercise the summarization path (which is skipped entirely when the
+# transcript is empty — see the existing silence-based SAVE tests above).
+
+def test_save_with_summary_success_prepends_summary(client, tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "transcribe_pcm", lambda *a, **kw: "hello from the meeting")
+    monkeypatch.setattr(app_module, "summarize_transcript", lambda text: "a concise summary")
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)  # preview
+        ws.send_text("SAVE")
+        messages = []
+        while True:
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    assert any(m["type"] == "status" for m in messages)
+    saved = messages[-1]
+    content = Path(saved["path"]).read_text(encoding="utf-8")
+    assert content == "Summary:\na concise summary\n\nTranscript:\nhello from the meeting"
+    # The live transcript display stays the plain transcript, not the summary.
+    assert saved["text"] == "hello from the meeting"
+
+
+def test_save_with_summary_failure_falls_back_to_transcript_only(client, tmp_path, monkeypatch):
+    """Summarization must never prevent the transcript from being saved."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "transcribe_pcm", lambda *a, **kw: "hello from the meeting")
+
+    def _boom(text):
+        raise RuntimeError("model failed to load")
+
+    monkeypatch.setattr(app_module, "summarize_transcript", _boom)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)
+        ws.send_text("SAVE")
+        messages = []
+        while True:
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    assert not any(m["type"] == "error" for m in messages)
+    saved = messages[-1]
+    content = Path(saved["path"]).read_text(encoding="utf-8")
+    assert content == "hello from the meeting"
+
+
+def test_save_with_empty_transcript_skips_summarization(client, tmp_path, monkeypatch):
+    """No transcript (e.g. silence) — summarizer must not be invoked at all."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    called = []
+    monkeypatch.setattr(app_module, "summarize_transcript", lambda text: called.append(text) or "x")
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)
+        ws.send_text("SAVE")
+        msg = _recv_json(ws)
+
+    assert msg["type"] == "saved"
+    assert called == []
+
+
+# ---------------------------------------------------------------------------
 # CANCEL command
 # ---------------------------------------------------------------------------
 

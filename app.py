@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from audio import list_input_devices, open_input_stream
+from summarizer import summarize_transcript
 from transcriber import transcribe_pcm
 
 app = FastAPI()
@@ -39,7 +40,12 @@ DESKTOP_CAPTURE = os.environ.get("TRANSCRIBER_DESKTOP") == "1"
 # app.py's capture diagnostics (stream open/callback/silence info) previously
 # only used print(), meaning every capture failure in the real packaged app
 # was completely invisible. Mirror main.py's log file so both interleave.
-_LOG_DIR = os.path.expanduser("~/Library/Logs/Transcriber")
+#
+# Namespaced by TRANSCRIBER_APP_NAME (same as main.py) so a beta build's log
+# never mixes with production's — a shared log file was previously the only
+# thing tying two independently-running app copies together.
+_APP_NAME = os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber")
+_LOG_DIR = os.path.expanduser(f"~/Library/Logs/{_APP_NAME}")
 _LOG_PATH = os.path.join(_LOG_DIR, "desktop.log")
 
 
@@ -392,7 +398,11 @@ async def websocket_endpoint(ws: WebSocket):
                 elif cmd == "SAVE":
                     await _stop_capture()
 
-                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                    # Millisecond resolution, not just seconds — two SAVEs completing
+                    # within the same wall-clock second (e.g. rapid testing) would
+                    # otherwise collide on the same filename and silently overwrite
+                    # each other.
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")[:-3]
 
                     if save_wav and full_pcm:
                         wav_path = SAVE_DIR / f"transcript_{timestamp}.wav"
@@ -427,7 +437,24 @@ async def websocket_endpoint(ws: WebSocket):
 
                     final_text = " ".join(all_segments)
                     save_path = SAVE_DIR / f"transcript_{timestamp}.txt"
-                    save_path.write_text(final_text, encoding="utf-8")
+
+                    # Summarization is a nice-to-have layer on top of a working save —
+                    # its failure must never prevent the transcript itself from being
+                    # written, so any error here just falls back to transcript-only.
+                    document = final_text
+                    if final_text:
+                        await ws.send_json({"type": "status", "text": "Generating summary..."})
+                        try:
+                            loop = asyncio.get_running_loop()
+                            summary = await loop.run_in_executor(
+                                None, summarize_transcript, final_text
+                            )
+                            if summary:
+                                document = f"Summary:\n{summary}\n\nTranscript:\n{final_text}"
+                        except Exception as exc:
+                            log(f"[transcriber] summarization failed: {type(exc).__name__}: {exc}")
+
+                    save_path.write_text(document, encoding="utf-8")
                     await ws.send_json({
                         "type": "saved",
                         "path": str(save_path),

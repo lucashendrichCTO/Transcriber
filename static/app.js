@@ -153,6 +153,12 @@
           setTranscript(msg.text);
           showSaveNotice(msg.path);
           resetUI();
+        } else if (msg.type === "status") {
+          // Non-fatal progress update (e.g. summarization running after Stop &
+          // Save Meeting) — same as "processing", just an updated message.
+          if (statusDot.className === "processing") {
+            setStatus("processing", msg.text);
+          }
         } else if (msg.type === "warning") {
           // Non-fatal diagnostic (e.g. one audio source looks silent) — capture
           // keeps running; don't touch button state or stop the session.

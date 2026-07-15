@@ -87,13 +87,18 @@ dependencies and takes a few minutes.
 4. Click **Start Recording**. The transcript fills in live as you talk —
    Whisper transcribes in ~30-second chunks with a couple seconds of overlap
    between them for context, so don't worry if text appears a beat behind.
-5. Click **Stop & Save** when you're done. The full transcript is written to
-   `~/Desktop/transcript_YYYY-MM-DD_HHMMSS.txt` (falls back to your home
+5. Click **Stop & Save Meeting** when you're done. Transcriber generates a
+   short local summary (overview, key points, decisions, action items) and
+   writes it above the full transcript to
+   `~/Desktop/transcript_YYYY-MM-DD_HHMMSS_mmm.txt` (falls back to your home
    folder if there's no Desktop). The app shows the save path once it's done.
+   If summarization fails for any reason, the transcript is still saved on
+   its own — summarization never blocks a save.
 
-**Note:** on first use ever, transcription will pause briefly while it
-downloads the Whisper `base` model (~142 MB) to `~/.cache/huggingface/`. This
-only happens once.
+**Note:** on first use ever, transcription/summarization will pause briefly
+while models download: the Whisper `base` model (~142 MB) and, the first time
+you save, a local summarization model (~2.3 GB) — both cached under
+`~/.cache/huggingface/`. This only happens once per model.
 
 ## Troubleshooting
 
@@ -140,6 +145,24 @@ cd ~/Transcriber
 This creates a Python virtual environment, installs dependencies, and opens
 `http://localhost:8765` in your browser.
 
+### Running a test/beta build alongside the installed app
+
+To try a change without touching your working `Transcriber.app` or an
+already-running dev server, set `TRANSCRIBER_APP_NAME` and/or
+`TRANSCRIBER_PORT` so the beta build/instance uses a different name, bundle
+identifier, and port:
+
+```bash
+# Browser mode on a different port (won't collide with a prod instance on 8765)
+TRANSCRIBER_PORT=8766 ./run.sh
+
+# Desktop app installed as "Transcriber-beta.app", alongside Transcriber.app
+TRANSCRIBER_APP_NAME=Transcriber-beta ./deploy.sh --beta
+```
+
+The beta app prompts for its own microphone permission on first launch —
+macOS ties permission to bundle identity, so this is expected, not a bug.
+
 See [CLAUDE.md](CLAUDE.md) for the full developer reference (running tests,
 architecture details) and [ONBOARDING.md](ONBOARDING.md) for a deeper
 architecture walkthrough.
@@ -156,6 +179,7 @@ via `pip`/`npm`, not vendored in this repository):
 | Component | License |
 |---|---|
 | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [CTranslate2](https://github.com/OpenNMT/CTranslate2) | MIT |
+| [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) / [llama.cpp](https://github.com/ggml-org/llama.cpp) | MIT |
 | [FastAPI](https://github.com/tiangolo/fastapi) | MIT |
 | [Starlette](https://github.com/encode/starlette) / [Uvicorn](https://github.com/encode/uvicorn) / [websockets](https://github.com/python-websockets/websockets) / [httpx](https://github.com/encode/httpx) | BSD-3-Clause |
 | [NumPy](https://github.com/numpy/numpy) | BSD-3-Clause |
@@ -178,7 +202,8 @@ is never imported or distributed as part of the running application. PyInstaller
 license includes an explicit exception permitting it to build and distribute
 software under any license, including this one.
 
-The Whisper speech-recognition model (downloaded automatically on first run
-to `~/.cache/huggingface/`, not included in this repository) is a separate,
-MIT-licensed model published by OpenAI / SYSTRAN, retrieved directly from
-Hugging Face under its own terms.
+The Whisper speech-recognition model and the Phi-4-mini-instruct summarization
+model (both downloaded automatically on first use to `~/.cache/huggingface/`,
+neither included in this repository) are separate, MIT-licensed models
+published by OpenAI/SYSTRAN and Microsoft respectively, retrieved directly
+from Hugging Face under their own terms.

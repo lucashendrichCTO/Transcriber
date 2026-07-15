@@ -29,11 +29,47 @@ import uvicorn
 # the `from app import …` below, which reads this at import time.
 os.environ["TRANSCRIBER_DESKTOP"] = "1"
 
+# A double-clicked .app bundle never inherits a shell env var, so
+# TRANSCRIBER_APP_NAME alone is invisible at runtime for a Finder launch —
+# it only ever affected the BUILD (baked into the executable name and
+# Info.plist by Transcriber.spec). Without this, every runtime-computed value
+# keyed off that env var (port, log dir, storage dir, window title,
+# reactivation bundle id) silently fell back to the "Transcriber" default for
+# ANY GUI-launched build, beta included — a real bug, not just a risk: a
+# beta build launched normally from Finder still bound production's port and
+# wrote to production's log file. sys.executable IS reliable here: when
+# PyInstaller-frozen, it's the bundle's own Mach-O binary
+# (Contents/MacOS/<name>), whatever name the build actually used — no env
+# var required. Only fall back to TRANSCRIBER_APP_NAME/"Transcriber" when not
+# frozen (e.g. plain `python main.py` during development).
+if getattr(sys, "frozen", False):
+    APP_NAME = os.path.basename(sys.executable)
+else:
+    APP_NAME = os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber")
+# Re-exported as an env var so app.py (imported next) resolves the same name
+# without duplicating the frozen-executable detection above.
+os.environ["TRANSCRIBER_APP_NAME"] = APP_NAME
+
 from app import app as fastapi_app
 
-PORT = 8765
+# Matches the name/bundle-id derivation in Transcriber.spec.
+BUNDLE_ID = (
+    "com.lucashendrich.transcriber"
+    if APP_NAME == "Transcriber"
+    else f"com.lucashendrich.transcriber.{APP_NAME.lower()}"
+)
 
-_LOG_DIR = os.path.expanduser("~/Library/Logs/Transcriber")
+# A double-clicked .app bundle never inherits a shell env var, so
+# TRANSCRIBER_PORT alone can't separate two installed copies (e.g. a beta
+# build and production) launched normally from Finder — both would default to
+# 8765 and collide, with whichever launches second either failing to bind or
+# mistaking the other app for a duplicate instance of itself. Deriving the
+# default port from APP_NAME instead means every distinctly-named build is
+# isolated out of the box, with no manual env var required.
+_DEFAULT_PORT = 8765 if APP_NAME == "Transcriber" else 8766
+PORT = int(os.environ.get("TRANSCRIBER_PORT", str(_DEFAULT_PORT)))
+
+_LOG_DIR = os.path.expanduser(f"~/Library/Logs/{APP_NAME}")
 _LOG_PATH = os.path.join(_LOG_DIR, "desktop.log")
 
 
@@ -95,7 +131,7 @@ if __name__ == "__main__":
     if _instance_already_running(PORT):
         log(f"another instance already serving port {PORT} — activating it and exiting")
         try:
-            subprocess.run(["open", "-b", "com.lucashendrich.transcriber"], timeout=5)
+            subprocess.run(["open", "-b", BUNDLE_ID], timeout=5)
         except Exception:
             pass
         sys.exit(0)
@@ -108,7 +144,7 @@ if __name__ == "__main__":
     log(f"server up on port {PORT}")
 
     window = webview.create_window(
-        title="Transcriber",
+        title=APP_NAME,
         url=f"http://127.0.0.1:{PORT}",
         width=880,
         height=740,
@@ -118,7 +154,7 @@ if __name__ == "__main__":
 
     # Persist WKWebView data (cookies, granted permissions) across launches so
     # the microphone grant from first use survives app restarts.
-    storage = os.path.expanduser("~/Library/Application Support/Transcriber")
+    storage = os.path.expanduser(f"~/Library/Application Support/{APP_NAME}")
     os.makedirs(storage, exist_ok=True)
 
     # Audio is captured in Python via sounddevice (see TRANSCRIBER_DESKTOP above),
