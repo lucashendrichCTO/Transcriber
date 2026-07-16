@@ -105,6 +105,15 @@ async def websocket_endpoint(ws: WebSocket):
     save_wav: bool = False
     previewing = False
 
+    # Tracks whether anything has happened since the last SAVE (new audio
+    # bytes, a new "start", or a CANCEL). A SAVE that arrives with the exact
+    # same activity count as the last SAVE is a spurious duplicate — e.g. two
+    # "SAVE" frames delivered back-to-back from one client action — not a
+    # deliberate second save, and is answered by resending the prior response
+    # rather than writing a second file for a session that hasn't changed.
+    activity_seq = 0
+    last_save: tuple[int, dict] | None = None
+
     # Python-side audio capture (pywebview / desktop mode)
     _capture_stop = asyncio.Event()
     _capture_task: asyncio.Task | None = None
@@ -352,6 +361,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             if "bytes" in message and message["bytes"]:
                 # Browser mode: client sends raw PCM binary frames
+                activity_seq += 1
                 data = message["bytes"]
                 pending_pcm.extend(data)
                 if save_wav:
@@ -377,6 +387,7 @@ async def websocket_endpoint(ws: WebSocket):
                             log(f"[transcriber] config: save_wav={save_wav}")
                         elif cfg.get("type") == "start":
                             # Desktop / pywebview mode: capture audio in Python
+                            activity_seq += 1
                             log(f"[transcriber] received start: meeting_device={cfg.get('meeting_device')!r} mic_device={cfg.get('mic_device')!r}")
                             await _stop_capture()
                             _capture_task = asyncio.create_task(
@@ -389,6 +400,18 @@ async def websocket_endpoint(ws: WebSocket):
                         log(f"[transcriber] malformed control message ignored: {cmd!r} ({exc})")
 
                 elif cmd == "SAVE":
+                    # A SAVE that arrives with the exact same activity count as the
+                    # last SAVE means nothing happened in between — e.g. two "SAVE"
+                    # frames delivered back-to-back from one client action (proven
+                    # to happen: they're processed one after another, not
+                    # concurrently, so a plain in-flight flag doesn't catch this).
+                    # Answer with the previous response instead of writing a second
+                    # file for a session that hasn't changed.
+                    if last_save is not None and last_save[0] == activity_seq:
+                        log("[transcriber] duplicate SAVE ignored — no activity since the last save")
+                        await ws.send_json(last_save[1])
+                        continue
+
                     await _stop_capture()
 
                     # Millisecond resolution, not just seconds — two SAVEs completing
@@ -448,14 +471,17 @@ async def websocket_endpoint(ws: WebSocket):
                             log(f"[transcriber] summarization failed: {type(exc).__name__}: {exc}")
 
                     save_path.write_text(document, encoding="utf-8")
-                    await ws.send_json({
+                    response = {
                         "type": "saved",
                         "path": str(save_path),
                         "text": final_text,
-                    })
+                    }
+                    await ws.send_json(response)
+                    last_save = (activity_seq, response)
                     _reset_session()
 
                 elif cmd == "CANCEL":
+                    activity_seq += 1
                     await _stop_capture()
                     _reset_session()
                     await ws.send_json({"type": "cancelled"})

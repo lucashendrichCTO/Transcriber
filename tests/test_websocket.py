@@ -65,7 +65,9 @@ def test_silence_pcm_produces_empty_transcript(client):
 # SAVE command
 # ---------------------------------------------------------------------------
 
-def test_save_returns_saved_message(client):
+def test_save_returns_saved_message(client, tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
     with client.websocket_connect("/ws") as ws:
         ws.send_bytes(_silence_pcm(0.5))
         _recv_json(ws)  # discard transcript preview
@@ -74,7 +76,9 @@ def test_save_returns_saved_message(client):
         assert msg["type"] == "saved"
 
 
-def test_save_message_contains_path(client):
+def test_save_message_contains_path(client, tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
     with client.websocket_connect("/ws") as ws:
         ws.send_bytes(_silence_pcm(0.5))
         _recv_json(ws)
@@ -195,6 +199,41 @@ def test_save_with_empty_transcript_skips_summarization(client, tmp_path, monkey
 
     assert msg["type"] == "saved"
     assert called == []
+
+
+def test_duplicate_save_while_in_flight_is_ignored(client, tmp_path, monkeypatch):
+    """A second SAVE arriving while the first is still processing (e.g. during
+    a slow summarization call) must be ignored, not produce a second file —
+    regression test for multiple transcript files appearing from what looked
+    like a single Stop & Save Meeting action."""
+    import time
+
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "transcribe_pcm", lambda *a, **kw: "hello from the meeting")
+
+    def _slow_summarize(text):
+        time.sleep(0.3)
+        return "a summary"
+
+    monkeypatch.setattr(app_module, "summarize_transcript", _slow_summarize)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)  # preview
+        ws.send_text("SAVE")
+        ws.send_text("SAVE")  # duplicate, sent immediately without waiting
+
+        messages = []
+        for _ in range(10):
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    saved_msgs = [m for m in messages if m["type"] == "saved"]
+    assert len(saved_msgs) == 1
+    assert len(list(tmp_path.glob("*.txt"))) == 1
 
 
 # ---------------------------------------------------------------------------

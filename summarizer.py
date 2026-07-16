@@ -43,7 +43,10 @@ def _complete(prompt: str, max_tokens: int = 700) -> str:
     result = model.create_chat_completion(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
-        temperature=0.1,
+        # 0.0 (fully deterministic) rather than a small positive value — a
+        # summarization task benefits from maximum factual grounding, not
+        # creative variation, and this measurably reduced drift in testing.
+        temperature=0.0,
     )
     return result["choices"][0]["message"]["content"].strip()
 
