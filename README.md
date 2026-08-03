@@ -57,11 +57,29 @@ can be a little awkward for everyday volume-key/AirPods behavior).
 
 1. Get `Transcriber.app` (built from source — see below — or provided to you
    directly) and drag it into your **Applications** folder.
-2. **Right-click (or Control-click) `Transcriber.app` and choose "Open"** the
-   first time. Because the app isn't notarized by Apple, a normal double-click
-   will be blocked by Gatekeeper ("Transcriber can't be opened because it is
-   from an unidentified developer"). Using Open once bypasses this; after
-   that, double-clicking works normally.
+2. Because the app isn't notarized by Apple (no paid Apple Developer
+   certificate), Gatekeeper will block the first launch. The exact steps to
+   get past it depend on your macOS version:
+   - **macOS Sequoia (15) or later:** opening the app (double-click or
+     right-click → Open) shows a dialog titled **"Transcriber Not Opened"**
+     with only **Move to Trash** / **Done** buttons — click **Done** (not
+     Move to Trash). Then go to **System Settings → Privacy & Security**,
+     scroll down to the message about Transcriber being blocked, and click
+     **Open Anyway** (you may need your password or Touch ID). Try opening
+     the app again — one more dialog appears, this time with a real **Open**
+     button; click it.
+   - **macOS Ventura/Sonoma or earlier:** right-click (or Control-click)
+     `Transcriber.app` and choose **Open** — this shows a dialog with an
+     **Open** button that bypasses Gatekeeper immediately.
+   - **Fastest, works on any version (Terminal):**
+     ```bash
+     xattr -cr /Applications/Transcriber.app
+     ```
+     removes the quarantine flag entirely; double-clicking afterward works
+     with no prompts at all.
+
+   Whichever method you use, you only need to do it once — after that,
+   double-clicking works normally.
 3. The app opens a window and, within a few seconds, macOS will show a
    **microphone permission prompt**. Click **Allow**. Transcriber only needs
    the **Microphone** permission — you do *not* need to grant Screen & System
@@ -118,9 +136,11 @@ you save, a local summarization model (~2.3 GB) — both cached under
 
 ## Troubleshooting
 
-- **"Transcriber can't be opened because it is from an unidentified
-  developer"** — right-click the app and choose Open instead of
-  double-clicking (see step 2 above).
+- **"Transcriber Not Opened" / "can't be opened because it is from an
+  unidentified developer"** — see step 2 in Installing the Mac app above;
+  the exact bypass steps differ by macOS version. Fastest fix on any
+  version: `xattr -cr /Applications/Transcriber.app` in Terminal, then open
+  normally.
 - **No microphone prompt appeared / audio is silent** — open **System
   Settings → Privacy & Security → Microphone** and confirm Transcriber is
   listed and enabled. If it's missing or you need to reset it:
