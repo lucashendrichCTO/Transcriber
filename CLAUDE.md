@@ -240,6 +240,7 @@ and appended before writing the final text file.
 | `static/worklet-processor.js` | `pcm-worklet` AudioWorkletProcessor — runs on the audio thread, buffers Float32 mic samples in ~4096-sample batches and posts them to the main thread. Browser mode only. |
 | `static/style.css` | Dark theme styles |
 | `run.sh` | One-command launcher — creates venv, installs deps, frees the port, auto-opens browser, starts server |
+| `logutil.py` | `make_file_logger()` — mirrors `print()`-style logging to `~/Library/Logs/<app_name>/desktop.log`, since a double-clicked `.app` has no visible stdout. Namespaced by app name so a beta build and production never share a log file. |
 
 ### Audio capture rationale (why it's built this way)
 
@@ -252,6 +253,19 @@ and appended before writing the final text file.
 - Desktop mode's `sounddevice.InputStream`s open directly at 16 kHz mono
   float32 (PortAudio resamples), so no separate downsampling step is needed
   there.
+
+### Duplicate-SAVE guard
+
+Two `SAVE` frames delivered back-to-back (e.g. a double-fired client event)
+used to each be fully processed, writing two transcript files from one user
+action — a plain in-flight boolean doesn't catch this because the frames are
+handled sequentially, not concurrently, so the first SAVE has already
+finished by the time the second is dequeued. The fix is an `activity_seq`
+counter in the `/ws` handler, bumped on every new audio chunk, `start`, or
+`CANCEL`. Each SAVE records `last_save = (activity_seq, response)`; a SAVE
+that arrives with the *same* `activity_seq` as `last_save` means nothing
+happened since the last save, so the handler resends the previous response
+instead of writing a second file.
 
 ### Transcription model
 
