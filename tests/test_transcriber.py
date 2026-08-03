@@ -4,11 +4,10 @@ Unit tests for transcriber.transcribe_pcm().
 The Whisper model is loaded once per test session via a session-scoped fixture
 to avoid the ~2s startup cost on every test.
 """
-import math
-
-import numpy as np
 import pytest
 
+from tests.conftest import sine_pcm as _sine_pcm
+from tests.conftest import silence_pcm as _silence_pcm
 from transcriber import get_model, transcribe_pcm
 
 
@@ -16,23 +15,6 @@ from transcriber import get_model, transcribe_pcm
 def preload_model():
     """Load the Whisper model once for the whole test session."""
     get_model()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _sine_pcm(freq_hz: float = 440.0, duration_s: float = 2.0, sample_rate: int = 16000) -> bytes:
-    """Return raw 16-bit signed LE mono PCM for a pure sine tone."""
-    n = int(duration_s * sample_rate)
-    t = np.linspace(0, duration_s, n, endpoint=False)
-    wave = (np.sin(2 * math.pi * freq_hz * t) * 0.5 * 32767).astype(np.int16)
-    return wave.tobytes()
-
-
-def _silence_pcm(duration_s: float = 1.0, sample_rate: int = 16000) -> bytes:
-    n = int(duration_s * sample_rate)
-    return b"\x00\x00" * n
 
 
 # ---------------------------------------------------------------------------

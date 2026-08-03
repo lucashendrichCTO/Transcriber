@@ -12,7 +12,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from audio import list_input_devices, open_input_stream
+from audio import float_to_pcm16, list_input_devices, open_input_stream
+from logutil import make_file_logger
+from summarizer import summarize_transcript
 from transcriber import transcribe_pcm
 
 app = FastAPI()
@@ -38,20 +40,18 @@ DESKTOP_CAPTURE = os.environ.get("TRANSCRIBER_DESKTOP") == "1"
 # main.py already learned this and writes its own messages to a log file.
 # app.py's capture diagnostics (stream open/callback/silence info) previously
 # only used print(), meaning every capture failure in the real packaged app
-# was completely invisible. Mirror main.py's log file so both interleave.
-_LOG_DIR = os.path.expanduser("~/Library/Logs/Transcriber")
-_LOG_PATH = os.path.join(_LOG_DIR, "desktop.log")
+# was completely invisible. Mirror main.py's log file (via the same shared
+# helper) so both interleave — only in desktop mode, since browser mode has a
+# real terminal. Namespaced by TRANSCRIBER_APP_NAME so a beta build's log
+# never mixes with production's.
+_write_log_file = make_file_logger(os.environ.get("TRANSCRIBER_APP_NAME", "Transcriber"))
 
 
 def log(msg: str) -> None:
-    print(msg, flush=True)
     if DESKTOP_CAPTURE:
-        try:
-            os.makedirs(_LOG_DIR, exist_ok=True)
-            with open(_LOG_PATH, "a") as f:
-                f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-        except Exception:
-            pass
+        _write_log_file(msg)
+    else:
+        print(msg, flush=True)
 
 
 # 30-second chunks at 16 kHz / 16-bit mono = 960,000 bytes
@@ -104,6 +104,15 @@ async def websocket_endpoint(ws: WebSocket):
 
     save_wav: bool = False
     previewing = False
+
+    # Tracks whether anything has happened since the last SAVE (new audio
+    # bytes, a new "start", or a CANCEL). A SAVE that arrives with the exact
+    # same activity count as the last SAVE is a spurious duplicate — e.g. two
+    # "SAVE" frames delivered back-to-back from one client action — not a
+    # deliberate second save, and is answered by resending the prior response
+    # rather than writing a second file for a session that hasn't changed.
+    activity_seq = 0
+    last_save: tuple[int, dict] | None = None
 
     # Python-side audio capture (pywebview / desktop mode)
     _capture_stop = asyncio.Event()
@@ -209,8 +218,7 @@ async def websocket_endpoint(ws: WebSocket):
                 mixed += accums[i][:ready]
             for i in live:
                 accums[i] = accums[i][ready:]
-            np.clip(mixed, -1.0, 1.0, out=mixed)
-            pcm = (mixed * 32767.0).astype("<i2").tobytes()
+            pcm = float_to_pcm16(mixed)
             pending_pcm.extend(pcm)
             if save_wav:
                 full_pcm.extend(pcm)
@@ -353,6 +361,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             if "bytes" in message and message["bytes"]:
                 # Browser mode: client sends raw PCM binary frames
+                activity_seq += 1
                 data = message["bytes"]
                 pending_pcm.extend(data)
                 if save_wav:
@@ -378,6 +387,7 @@ async def websocket_endpoint(ws: WebSocket):
                             log(f"[transcriber] config: save_wav={save_wav}")
                         elif cfg.get("type") == "start":
                             # Desktop / pywebview mode: capture audio in Python
+                            activity_seq += 1
                             log(f"[transcriber] received start: meeting_device={cfg.get('meeting_device')!r} mic_device={cfg.get('mic_device')!r}")
                             await _stop_capture()
                             _capture_task = asyncio.create_task(
@@ -386,13 +396,29 @@ async def websocket_endpoint(ws: WebSocket):
                                     cfg.get("mic_device", ""),
                                 )
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log(f"[transcriber] malformed control message ignored: {cmd!r} ({exc})")
 
                 elif cmd == "SAVE":
+                    # A SAVE that arrives with the exact same activity count as the
+                    # last SAVE means nothing happened in between — e.g. two "SAVE"
+                    # frames delivered back-to-back from one client action (proven
+                    # to happen: they're processed one after another, not
+                    # concurrently, so a plain in-flight flag doesn't catch this).
+                    # Answer with the previous response instead of writing a second
+                    # file for a session that hasn't changed.
+                    if last_save is not None and last_save[0] == activity_seq:
+                        log("[transcriber] duplicate SAVE ignored — no activity since the last save")
+                        await ws.send_json(last_save[1])
+                        continue
+
                     await _stop_capture()
 
-                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                    # Millisecond resolution, not just seconds — two SAVEs completing
+                    # within the same wall-clock second (e.g. rapid testing) would
+                    # otherwise collide on the same filename and silently overwrite
+                    # each other.
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")[:-3]
 
                     if save_wav and full_pcm:
                         wav_path = SAVE_DIR / f"transcript_{timestamp}.wav"
@@ -427,15 +453,35 @@ async def websocket_endpoint(ws: WebSocket):
 
                     final_text = " ".join(all_segments)
                     save_path = SAVE_DIR / f"transcript_{timestamp}.txt"
-                    save_path.write_text(final_text, encoding="utf-8")
-                    await ws.send_json({
+
+                    # Summarization is a nice-to-have layer on top of a working save —
+                    # its failure must never prevent the transcript itself from being
+                    # written, so any error here just falls back to transcript-only.
+                    document = final_text
+                    if final_text:
+                        await ws.send_json({"type": "status", "text": "Generating summary..."})
+                        try:
+                            loop = asyncio.get_running_loop()
+                            summary = await loop.run_in_executor(
+                                None, summarize_transcript, final_text
+                            )
+                            if summary:
+                                document = f"Summary:\n{summary}\n\nTranscript:\n{final_text}"
+                        except Exception as exc:
+                            log(f"[transcriber] summarization failed: {type(exc).__name__}: {exc}")
+
+                    save_path.write_text(document, encoding="utf-8")
+                    response = {
                         "type": "saved",
                         "path": str(save_path),
                         "text": final_text,
-                    })
+                    }
+                    await ws.send_json(response)
+                    last_save = (activity_seq, response)
                     _reset_session()
 
                 elif cmd == "CANCEL":
+                    activity_seq += 1
                     await _stop_capture()
                     _reset_session()
                     await ws.send_json({"type": "cancelled"})

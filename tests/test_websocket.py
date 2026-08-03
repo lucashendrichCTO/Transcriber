@@ -13,6 +13,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app import app
+from tests.conftest import silence_pcm as _silence_pcm
 
 
 @pytest.fixture(scope="session")
@@ -23,11 +24,6 @@ def client():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _silence_pcm(duration_s: float = 0.5, sample_rate: int = 16000) -> bytes:
-    n = int(duration_s * sample_rate)
-    return b"\x00\x00" * n
-
 
 def _recv_json(ws) -> dict:
     return json.loads(ws.receive_text())
@@ -69,7 +65,9 @@ def test_silence_pcm_produces_empty_transcript(client):
 # SAVE command
 # ---------------------------------------------------------------------------
 
-def test_save_returns_saved_message(client):
+def test_save_returns_saved_message(client, tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
     with client.websocket_connect("/ws") as ws:
         ws.send_bytes(_silence_pcm(0.5))
         _recv_json(ws)  # discard transcript preview
@@ -78,7 +76,9 @@ def test_save_returns_saved_message(client):
         assert msg["type"] == "saved"
 
 
-def test_save_message_contains_path(client):
+def test_save_message_contains_path(client, tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
     with client.websocket_connect("/ws") as ws:
         ws.send_bytes(_silence_pcm(0.5))
         _recv_json(ws)
@@ -120,6 +120,120 @@ def test_save_with_no_audio_still_saves(client, tmp_path, monkeypatch):
         msg = _recv_json(ws)
     assert msg["type"] == "saved"
     assert Path(msg["path"]).exists()
+
+
+# ---------------------------------------------------------------------------
+# Summarization on SAVE
+# ---------------------------------------------------------------------------
+# transcribe_pcm is monkeypatched to return fixed non-empty text so these tests
+# don't depend on Whisper actually transcribing anything meaningful, and so
+# they exercise the summarization path (which is skipped entirely when the
+# transcript is empty — see the existing silence-based SAVE tests above).
+
+def test_save_with_summary_success_prepends_summary(client, tmp_path, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "transcribe_pcm", lambda *a, **kw: "hello from the meeting")
+    monkeypatch.setattr(app_module, "summarize_transcript", lambda text: "a concise summary")
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)  # preview
+        ws.send_text("SAVE")
+        messages = []
+        while True:
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    assert any(m["type"] == "status" for m in messages)
+    saved = messages[-1]
+    content = Path(saved["path"]).read_text(encoding="utf-8")
+    assert content == "Summary:\na concise summary\n\nTranscript:\nhello from the meeting"
+    # The live transcript display stays the plain transcript, not the summary.
+    assert saved["text"] == "hello from the meeting"
+
+
+def test_save_with_summary_failure_falls_back_to_transcript_only(client, tmp_path, monkeypatch):
+    """Summarization must never prevent the transcript from being saved."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "transcribe_pcm", lambda *a, **kw: "hello from the meeting")
+
+    def _boom(text):
+        raise RuntimeError("model failed to load")
+
+    monkeypatch.setattr(app_module, "summarize_transcript", _boom)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)
+        ws.send_text("SAVE")
+        messages = []
+        while True:
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    assert not any(m["type"] == "error" for m in messages)
+    saved = messages[-1]
+    content = Path(saved["path"]).read_text(encoding="utf-8")
+    assert content == "hello from the meeting"
+
+
+def test_save_with_empty_transcript_skips_summarization(client, tmp_path, monkeypatch):
+    """No transcript (e.g. silence) — summarizer must not be invoked at all."""
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+
+    called = []
+    monkeypatch.setattr(app_module, "summarize_transcript", lambda text: called.append(text) or "x")
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)
+        ws.send_text("SAVE")
+        msg = _recv_json(ws)
+
+    assert msg["type"] == "saved"
+    assert called == []
+
+
+def test_duplicate_save_while_in_flight_is_ignored(client, tmp_path, monkeypatch):
+    """A second SAVE arriving while the first is still processing (e.g. during
+    a slow summarization call) must be ignored, not produce a second file —
+    regression test for multiple transcript files appearing from what looked
+    like a single Stop & Save Meeting action."""
+    import time
+
+    import app as app_module
+    monkeypatch.setattr(app_module, "SAVE_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "transcribe_pcm", lambda *a, **kw: "hello from the meeting")
+
+    def _slow_summarize(text):
+        time.sleep(0.3)
+        return "a summary"
+
+    monkeypatch.setattr(app_module, "summarize_transcript", _slow_summarize)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(_silence_pcm(0.5))
+        _recv_json(ws)  # preview
+        ws.send_text("SAVE")
+        ws.send_text("SAVE")  # duplicate, sent immediately without waiting
+
+        messages = []
+        for _ in range(10):
+            msg = _recv_json(ws)
+            messages.append(msg)
+            if msg["type"] == "saved":
+                break
+
+    saved_msgs = [m for m in messages if m["type"] == "saved"]
+    assert len(saved_msgs) == 1
+    assert len(list(tmp_path.glob("*.txt"))) == 1
 
 
 # ---------------------------------------------------------------------------

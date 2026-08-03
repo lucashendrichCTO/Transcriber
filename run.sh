@@ -3,7 +3,9 @@ set -e
 
 cd "$(dirname "$0")"
 
-PORT=8765
+# Set TRANSCRIBER_PORT to run a second instance (e.g. a beta test build)
+# without killing/colliding with one already running on 8765.
+PORT="${TRANSCRIBER_PORT:-8765}"
 URL="http://127.0.0.1:${PORT}"
 VERBOSE_MODE=0
 

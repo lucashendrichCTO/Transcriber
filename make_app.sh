@@ -10,10 +10,13 @@
 # Usage:
 #   ./make_app.sh              — build into dist/Transcriber.app
 #   ./make_app.sh --install    — build and copy to /Applications
+#
+# Set TRANSCRIBER_APP_NAME to build/install under a different name (e.g. a
+# "Transcriber-beta" test build that won't overwrite the production app).
 set -e
 cd "$(dirname "$0")"
 
-APP_NAME="Transcriber"
+APP_NAME="${TRANSCRIBER_APP_NAME:-Transcriber}"
 APP="dist/$APP_NAME.app"
 INSTALL=0
 PROJ="$PWD"
